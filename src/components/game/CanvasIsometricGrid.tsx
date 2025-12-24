@@ -3795,40 +3795,63 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
   }, [isDragging, showsDragGrid, dragStartTile, placeAtTile, selectedTool, dragEndTile, checkAndDiscoverCities, findBuildingOrigin, setSelectedTile, isPanning]);
   
   // Store wheel handler in ref to avoid re-attaching listener on every state change
-  const handleWheelRef = useRef<(e: WheelEvent) => void>();
+  const handleWheelRef = useRef<((e: WheelEvent) => void) | null>(null);
   handleWheelRef.current = (e: WheelEvent) => {
-    // Prevent browser zoom (Ctrl+wheel) and page scroll
+    // Prevent browser zoom and page scroll
     e.preventDefault();
     e.stopPropagation();
 
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
 
-    // Mouse position relative to canvas (in screen pixels)
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
+    // Trackpad pinch-to-zoom sends ctrlKey=true (browser synthesizes this)
+    // Mouse wheel zoom: use Ctrl/Cmd + scroll OR regular scroll
+    const isPinchZoom = e.ctrlKey || e.metaKey;
 
-    // Calculate new zoom - use larger delta for Ctrl+wheel for faster zoom
-    const isCtrlZoom = e.ctrlKey || e.metaKey;
-    const baseDelta = isCtrlZoom ? 0.1 : 0.05;
-    const zoomDelta = e.deltaY > 0 ? -baseDelta : baseDelta;
-    const newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom + zoomDelta));
+    if (isPinchZoom) {
+      // ZOOM: Pinch gesture or Ctrl+wheel
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
 
-    if (newZoom === zoom) return;
+      // Use deltaY for zoom amount - pinch gestures have smaller deltas
+      const zoomDelta = -e.deltaY * 0.01;
+      const newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom * (1 + zoomDelta)));
 
-    // World position under the mouse before zoom
-    const worldX = (mouseX - offset.x) / zoom;
-    const worldY = (mouseY - offset.y) / zoom;
+      if (Math.abs(newZoom - zoom) < 0.001) return;
 
-    // After zoom, keep the same world position under the mouse
-    const newOffsetX = mouseX - worldX * newZoom;
-    const newOffsetY = mouseY - worldY * newZoom;
+      // World position under the mouse before zoom
+      const worldX = (mouseX - offset.x) / zoom;
+      const worldY = (mouseY - offset.y) / zoom;
 
-    // Clamp to map bounds
-    const clampedOffset = clampOffset({ x: newOffsetX, y: newOffsetY }, newZoom);
+      // After zoom, keep the same world position under the mouse
+      const newOffsetX = mouseX - worldX * newZoom;
+      const newOffsetY = mouseY - worldY * newZoom;
 
-    setOffset(clampedOffset);
-    setZoom(newZoom);
+      const clampedOffset = clampOffset({ x: newOffsetX, y: newOffsetY }, newZoom);
+      setOffset(clampedOffset);
+      setZoom(newZoom);
+    } else {
+      // PAN: Two-finger scroll on trackpad or regular scroll wheel
+      // deltaMode: 0 = pixels, 1 = lines, 2 = pages
+      const multiplier = e.deltaMode === 1 ? 20 : e.deltaMode === 2 ? 400 : 1;
+      const deltaX = e.deltaX * multiplier;
+      const deltaY = e.deltaY * multiplier;
+
+      // If mostly horizontal scroll with minimal vertical, treat as pure horizontal pan
+      // This prevents jittery up/down movement during horizontal trackpad gestures
+      const isHorizontalDominant = Math.abs(deltaX) > Math.abs(deltaY) * 2;
+      const effectiveDeltaY = isHorizontalDominant ? 0 : deltaY;
+
+      // Skip tiny movements to reduce jitter
+      if (Math.abs(deltaX) < 0.5 && Math.abs(effectiveDeltaY) < 0.5) return;
+
+      const newOffset = {
+        x: offset.x - deltaX,
+        y: offset.y - effectiveDeltaY,
+      };
+
+      setOffset(clampOffset(newOffset, zoom));
+    }
   };
 
   // Attach wheel event listener once with passive: false to allow preventDefault
