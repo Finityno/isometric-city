@@ -142,6 +142,11 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const panCandidateRef = useRef<{ startX: number; startY: number; gridX: number; gridY: number } | null>(null);
   const [hoveredTile, setHoveredTile] = useState<{ x: number; y: number } | null>(null);
+  // PERF: Use ref for hover position to avoid React re-renders on every mouse move
+  // The ref is used for immediate hover canvas updates, state is throttled for tooltip display
+  const hoveredTileRef = useRef<{ x: number; y: number } | null>(null);
+  const hoverRenderPendingRef = useRef<number | null>(null);
+  const lastHoverStateUpdateRef = useRef<number>(0);
   const [hoveredIncident, setHoveredIncident] = useState<{
     x: number;
     y: number;
@@ -3039,31 +3044,36 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
   // PERF: hoveredTile and selectedTile removed from deps - now rendered on separate hover canvas layer
   }, [grid, gridSize, offset, zoom, overlayMode, imagesLoaded, imageLoadVersion, canvasSize, dragStartTile, dragEndTile, state.services, currentSpritePack, waterBodies, getTileMetadata, showsDragGrid, isMobile]);
   
-  // PERF: Lightweight hover/selection overlay - renders ONLY tile highlights
-  // This runs frequently (on mouse move) but is extremely fast since it only draws simple shapes
-  useEffect(() => {
+  // PERF: Ref-based hover canvas drawing function - avoids React re-render overhead
+  // This is called directly from mouse move handler via requestAnimationFrame
+  const drawHoverCanvas = useCallback(() => {
     const canvas = hoverCanvasRef.current;
     if (!canvas) return;
-    
-    const ctx = canvas.getContext('2d');
+
+    // PERF: Use alpha: true and desynchronized: true for better performance
+    // desynchronized reduces latency by not waiting for the event loop
+    const ctx = canvas.getContext('2d', { alpha: true, desynchronized: true });
     if (!ctx) return;
-    
+
     const dpr = window.devicePixelRatio || 1;
-    
+    const currentOffset = offset;
+    const currentZoom = zoom;
+    const currentHover = hoveredTileRef.current;
+
     // Clear the hover canvas
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
+
     // Apply transform (same as main canvas)
     ctx.scale(dpr, dpr);
-    ctx.translate(offset.x, offset.y);
-    ctx.scale(zoom, zoom);
-    
+    ctx.translate(currentOffset.x, currentOffset.y);
+    ctx.scale(currentZoom, currentZoom);
+
     // Helper to draw highlight diamond
     const drawHighlight = (screenX: number, screenY: number, color: string = 'rgba(255, 255, 255, 0.25)', strokeColor: string = '#ffffff') => {
       const w = TILE_WIDTH;
       const h = TILE_HEIGHT;
-      
+
       // Draw semi-transparent fill
       ctx.fillStyle = color;
       ctx.beginPath();
@@ -3073,19 +3083,19 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
       ctx.lineTo(screenX, screenY + h / 2);
       ctx.closePath();
       ctx.fill();
-      
+
       // Draw border
       ctx.strokeStyle = strokeColor;
       ctx.lineWidth = 2;
       ctx.stroke();
     };
-    
-    // Draw hovered tile highlight
-    if (hoveredTile && hoveredTile.x >= 0 && hoveredTile.x < gridSize && hoveredTile.y >= 0 && hoveredTile.y < gridSize) {
-      const { screenX, screenY } = gridToScreen(hoveredTile.x, hoveredTile.y, 0, 0);
+
+    // Draw hovered tile highlight (from ref, not state)
+    if (currentHover && currentHover.x >= 0 && currentHover.x < gridSize && currentHover.y >= 0 && currentHover.y < gridSize) {
+      const { screenX, screenY } = gridToScreen(currentHover.x, currentHover.y, 0, 0);
       drawHighlight(screenX, screenY);
     }
-    
+
     // Draw selected tile highlight (including multi-tile buildings)
     if (selectedTile && selectedTile.x >= 0 && selectedTile.x < gridSize && selectedTile.y >= 0 && selectedTile.y < gridSize) {
       const selectedOrigin = grid[selectedTile.y]?.[selectedTile.x];
@@ -3104,9 +3114,43 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
         }
       }
     }
-    
+
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-  }, [hoveredTile, selectedTile, offset, zoom, gridSize, grid]);
+  }, [offset, zoom, gridSize, grid, selectedTile]);
+
+  // PERF: Request hover canvas redraw without triggering React re-render
+  // At night (when lighting canvas is complex), throttle hover updates more aggressively
+  const lastHoverDrawTimeRef = useRef<number>(0);
+  const requestHoverCanvasRedraw = useCallback(() => {
+    if (hoverRenderPendingRef.current !== null) return; // Already pending
+
+    // PERF: At night, throttle hover canvas updates to reduce compositor overhead
+    // The complex lighting canvas makes layer compositing expensive
+    const isNight = visualHour >= 20 || visualHour < 5;
+    const throttleMs = isNight ? 32 : 0; // ~30fps at night, immediate during day
+    const now = performance.now();
+    const timeSinceLastDraw = now - lastHoverDrawTimeRef.current;
+
+    if (timeSinceLastDraw < throttleMs) {
+      // Schedule for later
+      hoverRenderPendingRef.current = window.setTimeout(() => {
+        hoverRenderPendingRef.current = null;
+        lastHoverDrawTimeRef.current = performance.now();
+        drawHoverCanvas();
+      }, throttleMs - timeSinceLastDraw) as unknown as number;
+    } else {
+      hoverRenderPendingRef.current = requestAnimationFrame(() => {
+        hoverRenderPendingRef.current = null;
+        lastHoverDrawTimeRef.current = performance.now();
+        drawHoverCanvas();
+      });
+    }
+  }, [drawHoverCanvas, visualHour]);
+
+  // Redraw hover canvas when dependencies change (offset, zoom, selectedTile)
+  useEffect(() => {
+    requestHoverCanvasRedraw();
+  }, [requestHoverCanvasRedraw]);
   
   // Animate decorative car traffic AND emergency vehicles on top of the base canvas
   useEffect(() => {
@@ -3241,9 +3285,12 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    
-    // PERF: Hide lighting during mobile panning/zooming for better performance
-    if (isMobile && (isPanningRef.current || isPinchZoomingRef.current)) {
+
+    // PERF: Hide lighting during panning/zooming for better performance
+    // On mobile: always hide during pan/zoom
+    // On desktop: hide during rapid panning when zoomed out
+    const isDesktopPanningZoomedOut = !isMobile && isPanningRef.current && zoom < 0.6;
+    if ((isMobile && (isPanningRef.current || isPinchZoomingRef.current)) || isDesktopPanningZoomedOut) {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       return;
@@ -3325,10 +3372,17 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     // Collect light sources in a single pass through visible tiles
     const lightCutouts: Array<{x: number, y: number, type: 'road' | 'building', buildingType?: string, seed?: number}> = [];
     const coloredGlows: Array<{x: number, y: number, type: string}> = [];
-    
-    // PERF: On mobile, sample fewer lights to reduce gradient count
-    const roadSampleRate = isMobile ? 3 : 1; // Every 3rd road on mobile
+
+    // PERF: Adaptive light sampling based on zoom level, darkness, and device
+    // More aggressive sampling when zoomed out or at full night (lights cause compositor overhead)
+    const isFullNight = darkness >= 0.95; // Full darkness = more compositor overhead
+    const roadSampleRate = isMobile ? 3 : (isFullNight ? 3 : (zoom < 0.5 ? 4 : zoom < 0.8 ? 2 : 1));
+    const buildingSampleRate = isMobile ? 2 : (isFullNight ? 2 : (zoom < 0.5 ? 3 : 1));
+    // PERF: Cap total lights to prevent frame drops in dense cities
+    // Lower cap at full night to reduce compositor overhead when blending with other canvases
+    const MAX_LIGHTS = isMobile ? 100 : (isFullNight ? 200 : 400);
     let roadCounter = 0;
+    let buildingCounter = 0;
     
     // PERF: Only iterate through diagonal bands that intersect the visible viewport
     // This skips entire rows of tiles that can't possibly be visible, significantly reducing iterations
@@ -3348,27 +3402,37 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
         const tile = grid[y][x];
         const buildingType = tile.building.type;
         
+        // PERF: Early exit if we've hit the max light count
+        if (lightCutouts.length >= MAX_LIGHTS) break;
+
         if (buildingType === 'road') {
           roadCounter++;
-          // PERF: On mobile, only include every Nth road light
+          // PERF: Adaptive road light sampling based on zoom
           if (roadCounter % roadSampleRate === 0) {
             lightCutouts.push({ x, y, type: 'road' });
-            if (!isMobile) {
+            // PERF: Skip colored glows on mobile, when zoomed out, and at full night
+            if (!isMobile && !isFullNight && zoom >= 0.7) {
               coloredGlows.push({ x, y, type: 'road' });
             }
           }
         } else if (!nonLitTypes.has(buildingType) && tile.building.powered) {
-          lightCutouts.push({ x, y, type: 'building', buildingType, seed: x * 1000 + y });
-          
-          // Check for special colored glows (skip on mobile for performance)
-          if (!isMobile && (buildingType === 'hospital' || buildingType === 'fire_station' || 
-              buildingType === 'police_station' || buildingType === 'power_plant')) {
-            coloredGlows.push({ x, y, type: buildingType });
+          buildingCounter++;
+          // PERF: Adaptive building light sampling based on zoom
+          if (buildingCounter % buildingSampleRate === 0) {
+            lightCutouts.push({ x, y, type: 'building', buildingType, seed: x * 1000 + y });
+
+            // Check for special colored glows (skip on mobile, when zoomed out, and at full night for performance)
+            if (!isMobile && !isFullNight && zoom >= 0.6 && (buildingType === 'hospital' || buildingType === 'fire_station' ||
+                buildingType === 'police_station' || buildingType === 'power_plant')) {
+              coloredGlows.push({ x, y, type: buildingType });
+            }
           }
         }
       }
+      // PERF: Break outer loop if max lights reached
+      if (lightCutouts.length >= MAX_LIGHTS) break;
     }
-    
+
     // Draw light cutouts (destination-out)
     ctx.globalCompositeOperation = 'destination-out';
     ctx.save();
@@ -3396,23 +3460,25 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
         const isCommercial = commercialTypes.has(buildingType);
         const glowStrength = isCommercial ? 0.9 : isResidential ? 0.65 : 0.75;
         
-        // PERF: On mobile, skip individual window lights - just use ground glow
-        if (!isMobile) {
-          let numWindows = 2;
-          if (buildingType.includes('medium') || buildingType.includes('low')) numWindows = 3;
-          if (buildingType.includes('high') || buildingType === 'mall') numWindows = 5;
-          if (buildingType === 'mansion' || buildingType === 'office_high') numWindows = 4;
-          
+        // PERF: Skip individual window lights on mobile and when zoomed out (they're not visible)
+        // Only show window lights when zoomed in enough to see them
+        if (!isMobile && zoom >= 0.8) {
+          // PERF: Reduce window counts for better performance
+          let numWindows = 1;
+          if (buildingType.includes('medium') || buildingType.includes('low')) numWindows = 2;
+          if (buildingType.includes('high') || buildingType === 'mall') numWindows = 3;
+          if (buildingType === 'mansion' || buildingType === 'office_high') numWindows = 2;
+
           const windowSize = 5;
           const buildingHeight = -18;
-          
+
           for (let i = 0; i < numWindows; i++) {
             const isLit = pseudoRandom(light.seed, i) < (isResidential ? 0.55 : 0.75);
             if (!isLit) continue;
-            
+
             const wx = tileCenterX + (pseudoRandom(light.seed, i + 10) - 0.5) * 22;
             const wy = tileCenterY + buildingHeight + (pseudoRandom(light.seed, i + 20) - 0.5) * 16;
-            
+
             const gradient = ctx.createRadialGradient(wx, wy, 0, wx, wy, windowSize * 2.5);
             gradient.addColorStop(0, `rgba(255, 255, 255, ${glowStrength * lightIntensity})`);
             gradient.addColorStop(0.5, `rgba(255, 255, 255, ${glowStrength * 0.4 * lightIntensity})`);
@@ -3657,8 +3723,19 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
       const { gridX, gridY } = screenToGrid(mouseX, mouseY, offset.x / zoom, offset.y / zoom);
       
       if (gridX >= 0 && gridX < gridSize && gridY >= 0 && gridY < gridSize) {
-        // Only update hovered tile if it actually changed to avoid unnecessary re-renders
-        setHoveredTile(prev => (prev?.x === gridX && prev?.y === gridY) ? prev : { x: gridX, y: gridY });
+        // PERF: Update ref directly to avoid React re-renders, then request canvas redraw
+        const prevHover = hoveredTileRef.current;
+        if (!prevHover || prevHover.x !== gridX || prevHover.y !== gridY) {
+          hoveredTileRef.current = { x: gridX, y: gridY };
+          requestHoverCanvasRedraw();
+
+          // Throttle state updates for tooltip display (only update every 100ms)
+          const now = performance.now();
+          if (now - lastHoverStateUpdateRef.current > 100) {
+            lastHoverStateUpdateRef.current = now;
+            setHoveredTile({ x: gridX, y: gridY });
+          }
+        }
         
         // Check for fire or crime incidents at this tile for tooltip display
         const tile = grid[gridY]?.[gridX];
@@ -3739,7 +3816,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
         }
       }
     }
-  }, [isPanning, dragStart, offset, zoom, gridSize, isDragging, showsDragGrid, dragStartTile, selectedTool, roadDrawDirection, supportsDragPlace, placeAtTile, clampOffset, grid]);
+  }, [isPanning, dragStart, offset, zoom, gridSize, isDragging, showsDragGrid, dragStartTile, selectedTool, roadDrawDirection, supportsDragPlace, placeAtTile, clampOffset, grid, requestHoverCanvasRedraw]);
   
   const handleMouseUp = useCallback(() => {
     if (panCandidateRef.current && !isPanning && selectedTool === 'select') {
@@ -3790,9 +3867,11 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     
     // Clear hovered tile when mouse leaves
     if (!containerRef.current) {
+      hoveredTileRef.current = null;
       setHoveredTile(null);
+      requestHoverCanvasRedraw();
     }
-  }, [isDragging, showsDragGrid, dragStartTile, placeAtTile, selectedTool, dragEndTile, checkAndDiscoverCities, findBuildingOrigin, setSelectedTile, isPanning]);
+  }, [isDragging, showsDragGrid, dragStartTile, placeAtTile, selectedTool, dragEndTile, checkAndDiscoverCities, findBuildingOrigin, setSelectedTile, isPanning, requestHoverCanvasRedraw]);
   
   // Store wheel handler in ref to avoid re-attaching listener on every state change
   const handleWheelRef = useRef<((e: WheelEvent) => void) | null>(null);
