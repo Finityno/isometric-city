@@ -3794,38 +3794,54 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     }
   }, [isDragging, showsDragGrid, dragStartTile, placeAtTile, selectedTool, dragEndTile, checkAndDiscoverCities, findBuildingOrigin, setSelectedTile, isPanning]);
   
-  const handleWheel = useCallback((e: React.WheelEvent) => {
+  // Store wheel handler in ref to avoid re-attaching listener on every state change
+  const handleWheelRef = useRef<(e: WheelEvent) => void>();
+  handleWheelRef.current = (e: WheelEvent) => {
+    // Prevent browser zoom (Ctrl+wheel) and page scroll
     e.preventDefault();
-    
+    e.stopPropagation();
+
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
-    
+
     // Mouse position relative to canvas (in screen pixels)
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
-    
-    // Calculate new zoom
-    const zoomDelta = e.deltaY > 0 ? -0.05 : 0.05;
+
+    // Calculate new zoom - use larger delta for Ctrl+wheel for faster zoom
+    const isCtrlZoom = e.ctrlKey || e.metaKey;
+    const baseDelta = isCtrlZoom ? 0.1 : 0.05;
+    const zoomDelta = e.deltaY > 0 ? -baseDelta : baseDelta;
     const newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom + zoomDelta));
-    
+
     if (newZoom === zoom) return;
-    
+
     // World position under the mouse before zoom
-    // screen = world * zoom + offset → world = (screen - offset) / zoom
     const worldX = (mouseX - offset.x) / zoom;
     const worldY = (mouseY - offset.y) / zoom;
-    
+
     // After zoom, keep the same world position under the mouse
-    // mouseX = worldX * newZoom + newOffset.x → newOffset.x = mouseX - worldX * newZoom
     const newOffsetX = mouseX - worldX * newZoom;
     const newOffsetY = mouseY - worldY * newZoom;
-    
+
     // Clamp to map bounds
     const clampedOffset = clampOffset({ x: newOffsetX, y: newOffsetY }, newZoom);
-    
+
     setOffset(clampedOffset);
     setZoom(newZoom);
-  }, [zoom, offset, clampOffset]);
+  };
+
+  // Attach wheel event listener once with passive: false to allow preventDefault
+  // This prevents browser zoom (Ctrl+scroll) from taking over
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handler = (e: WheelEvent) => handleWheelRef.current?.(e);
+    container.addEventListener('wheel', handler, { passive: false });
+
+    return () => container.removeEventListener('wheel', handler);
+  }, []);
 
   // Touch handlers for mobile
   const getTouchDistance = useCallback((touch1: React.Touch, touch2: React.Touch) => {
@@ -3973,7 +3989,6 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
-      onWheel={handleWheel}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
