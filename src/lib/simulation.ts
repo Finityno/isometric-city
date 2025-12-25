@@ -859,35 +859,59 @@ const SERVICE_BUILDING_TYPES = new Set([
   'power_plant', 'water_tower'
 ]);
 
+// PERF: Cache for service building positions to avoid O(n²) scan every tick
+// The cache is invalidated when buildings are placed/removed (gameVersion changes)
+type ServiceBuildingInfo = { x: number; y: number; type: BuildingType };
+let cachedServiceBuildings: ServiceBuildingInfo[] | null = null;
+let cachedServiceBuildingsGridRef: Tile[][] | null = null;
+
+// Call this to invalidate the service building cache when buildings change
+export function invalidateServiceBuildingCache(): void {
+  cachedServiceBuildings = null;
+  cachedServiceBuildingsGridRef = null;
+}
+
 // Calculate service coverage from service buildings - optimized version
 function calculateServiceCoverage(grid: Tile[][], size: number): ServiceCoverage {
   const services = createServiceCoverage(size);
-  
-  // First pass: collect all service building positions (much faster than checking every tile)
-  const serviceBuildings: Array<{ x: number; y: number; type: BuildingType }> = [];
-  
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const tile = grid[y][x];
-      const buildingType = tile.building.type;
-      
-      // Quick check if this is a service building
-      if (!SERVICE_BUILDING_TYPES.has(buildingType)) continue;
-      
-      // Skip buildings under construction
-      if (tile.building.constructionProgress !== undefined && tile.building.constructionProgress < 100) {
-        continue;
+
+  // PERF: Use cached service buildings if grid reference hasn't changed
+  // This avoids the O(n²) first pass when grid hasn't been modified
+  let serviceBuildings: ServiceBuildingInfo[];
+
+  if (cachedServiceBuildings !== null && cachedServiceBuildingsGridRef === grid) {
+    serviceBuildings = cachedServiceBuildings;
+  } else {
+    // First pass: collect all service building positions
+    serviceBuildings = [];
+
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const tile = grid[y][x];
+        const buildingType = tile.building.type;
+
+        // Quick check if this is a service building
+        if (!SERVICE_BUILDING_TYPES.has(buildingType)) continue;
+
+        // Skip buildings under construction
+        if (tile.building.constructionProgress !== undefined && tile.building.constructionProgress < 100) {
+          continue;
+        }
+
+        // Skip abandoned buildings
+        if (tile.building.abandoned) {
+          continue;
+        }
+
+        serviceBuildings.push({ x, y, type: buildingType });
       }
-      
-      // Skip abandoned buildings
-      if (tile.building.abandoned) {
-        continue;
-      }
-      
-      serviceBuildings.push({ x, y, type: buildingType });
     }
+
+    // Cache the service buildings for next tick
+    cachedServiceBuildings = serviceBuildings;
+    cachedServiceBuildingsGridRef = grid;
   }
-  
+
   // Second pass: apply coverage for each service building
   for (const building of serviceBuildings) {
     const { x, y, type } = building;
@@ -1304,81 +1328,189 @@ function evolveBuilding(grid: Tile[][], x: number, y: number, services: ServiceC
 
 // Calculate city stats
 // effectiveTaxRate is the lagged tax rate used for demand calculations
-function calculateStats(grid: Tile[][], size: number, budget: Budget, taxRate: number, effectiveTaxRate: number, services: ServiceCoverage): Stats {
-  let population = 0;
-  let jobs = 0;
-  let totalPollution = 0;
-  let residentialZones = 0;
-  let commercialZones = 0;
-  let industrialZones = 0;
-  let developedResidential = 0;
-  let developedCommercial = 0;
-  let developedIndustrial = 0;
-  let totalLandValue = 0;
-  let treeCount = 0;
-  let waterCount = 0;
-  let parkCount = 0;
-  let subwayTiles = 0;
-  let subwayStations = 0;
-  let railTiles = 0;
-  let railStations = 0;
-  
-  // Special buildings that affect demand
-  let hasAirport = false;
-  let hasCityHall = false;
-  let hasSpaceProgram = false;
-  let stadiumCount = 0;
-  let museumCount = 0;
-  let hasAmusementPark = false;
+// PERF: Unified grid metrics collection - single pass for all data
+// Replaces 3 separate grid scans (calculateStats, updateBudgetCosts, generateAdvisorMessages)
+interface GridMetrics {
+  // Population & Jobs
+  population: number;
+  jobs: number;
 
-  // Count everything
+  // Environment
+  totalPollution: number;
+  totalLandValue: number;
+  treeCount: number;
+  waterCount: number;
+  parkCount: number;
+
+  // Zone counts
+  residentialZones: number;
+  commercialZones: number;
+  industrialZones: number;
+  developedResidential: number;
+  developedCommercial: number;
+  developedIndustrial: number;
+
+  // Transport
+  subwayTiles: number;
+  subwayStations: number;
+  railTiles: number;
+  railStations: number;
+  roadCount: number;
+
+  // Special buildings
+  hasAirport: boolean;
+  hasCityHall: boolean;
+  hasSpaceProgram: boolean;
+  stadiumCount: number;
+  museumCount: number;
+  hasAmusementPark: boolean;
+
+  // Budget building counts
+  policeCount: number;
+  fireCount: number;
+  hospitalCount: number;
+  schoolCount: number;
+  universityCount: number;
+  powerCount: number;
+  waterTowerCount: number;
+
+  // Advisor metrics
+  unpoweredBuildings: number;
+  unwateredBuildings: number;
+  abandonedBuildings: number;
+  abandonedResidential: number;
+  abandonedCommercial: number;
+  abandonedIndustrial: number;
+}
+
+function collectGridMetrics(grid: Tile[][], size: number): GridMetrics {
+  const metrics: GridMetrics = {
+    population: 0,
+    jobs: 0,
+    totalPollution: 0,
+    totalLandValue: 0,
+    treeCount: 0,
+    waterCount: 0,
+    parkCount: 0,
+    residentialZones: 0,
+    commercialZones: 0,
+    industrialZones: 0,
+    developedResidential: 0,
+    developedCommercial: 0,
+    developedIndustrial: 0,
+    subwayTiles: 0,
+    subwayStations: 0,
+    railTiles: 0,
+    railStations: 0,
+    roadCount: 0,
+    hasAirport: false,
+    hasCityHall: false,
+    hasSpaceProgram: false,
+    stadiumCount: 0,
+    museumCount: 0,
+    hasAmusementPark: false,
+    policeCount: 0,
+    fireCount: 0,
+    hospitalCount: 0,
+    schoolCount: 0,
+    universityCount: 0,
+    powerCount: 0,
+    waterTowerCount: 0,
+    unpoweredBuildings: 0,
+    unwateredBuildings: 0,
+    abandonedBuildings: 0,
+    abandonedResidential: 0,
+    abandonedCommercial: 0,
+    abandonedIndustrial: 0,
+  };
+
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       const tile = grid[y][x];
       const building = tile.building;
+      const buildingType = building.type;
+      const isComplete = building.constructionProgress === undefined || building.constructionProgress >= 100;
 
-      // Apply subway commercial boost to jobs (tiles with subway get 15% boost to commercial jobs)
+      // Apply subway commercial boost to jobs
       let jobsFromTile = building.jobs;
       if (tile.hasSubway && tile.zone === 'commercial') {
         jobsFromTile = Math.floor(jobsFromTile * 1.15);
       }
-      
-      population += building.population;
-      jobs += jobsFromTile;
-      totalPollution += tile.pollution;
-      totalLandValue += tile.landValue;
 
+      metrics.population += building.population;
+      metrics.jobs += jobsFromTile;
+      metrics.totalPollution += tile.pollution;
+      metrics.totalLandValue += tile.landValue;
+
+      // Subway tiles
+      if (tile.hasSubway) metrics.subwayTiles++;
+
+      // Zone counts
       if (tile.zone === 'residential') {
-        residentialZones++;
-        if (building.type !== 'grass' && building.type !== 'empty') developedResidential++;
+        metrics.residentialZones++;
+        if (buildingType !== 'grass' && buildingType !== 'empty') metrics.developedResidential++;
       } else if (tile.zone === 'commercial') {
-        commercialZones++;
-        if (building.type !== 'grass' && building.type !== 'empty') developedCommercial++;
+        metrics.commercialZones++;
+        if (buildingType !== 'grass' && buildingType !== 'empty') metrics.developedCommercial++;
       } else if (tile.zone === 'industrial') {
-        industrialZones++;
-        if (building.type !== 'grass' && building.type !== 'empty') developedIndustrial++;
+        metrics.industrialZones++;
+        if (buildingType !== 'grass' && buildingType !== 'empty') metrics.developedIndustrial++;
       }
 
-      if (building.type === 'tree') treeCount++;
-      if (building.type === 'water') waterCount++;
-      if (building.type === 'park' || building.type === 'park_large') parkCount++;
-      if (building.type === 'tennis') parkCount++; // Tennis courts count as parks
-      if (tile.hasSubway) subwayTiles++;
-      if (building.type === 'subway_station') subwayStations++;
-      if (building.type === 'rail' || tile.hasRailOverlay) railTiles++;
-      if (building.type === 'rail_station') railStations++;
-      
-      // Track special buildings (only count if construction is complete)
-      if (building.constructionProgress === undefined || building.constructionProgress >= 100) {
-        if (building.type === 'airport') hasAirport = true;
-        if (building.type === 'city_hall') hasCityHall = true;
-        if (building.type === 'space_program') hasSpaceProgram = true;
-        if (building.type === 'stadium') stadiumCount++;
-        if (building.type === 'museum') museumCount++;
-        if (building.type === 'amusement_park') hasAmusementPark = true;
+      // Advisor metrics - unpowered/unwatered zoned buildings
+      if (tile.zone !== 'none' && buildingType !== 'grass') {
+        if (!building.powered) metrics.unpoweredBuildings++;
+        if (!building.watered) metrics.unwateredBuildings++;
       }
+
+      // Abandoned buildings
+      if (building.abandoned) {
+        metrics.abandonedBuildings++;
+        if (tile.zone === 'residential') metrics.abandonedResidential++;
+        else if (tile.zone === 'commercial') metrics.abandonedCommercial++;
+        else if (tile.zone === 'industrial') metrics.abandonedIndustrial++;
+      }
+
+      // Use switch for O(1) building type handling via jump table
+      switch (buildingType) {
+        case 'tree': metrics.treeCount++; break;
+        case 'water': metrics.waterCount++; break;
+        case 'park': metrics.parkCount++; break;
+        case 'park_large': metrics.parkCount++; break;
+        case 'tennis': metrics.parkCount++; break;
+        case 'subway_station': metrics.subwayStations++; break;
+        case 'rail': metrics.railTiles++; break;
+        case 'rail_station': metrics.railStations++; break;
+        case 'road': metrics.roadCount++; break;
+        case 'police_station': metrics.policeCount++; break;
+        case 'fire_station': metrics.fireCount++; break;
+        case 'hospital': metrics.hospitalCount++; break;
+        case 'school': metrics.schoolCount++; break;
+        case 'university': metrics.universityCount++; break;
+        case 'power_plant': metrics.powerCount++; break;
+        case 'water_tower': metrics.waterTowerCount++; break;
+        case 'airport': if (isComplete) metrics.hasAirport = true; break;
+        case 'city_hall': if (isComplete) metrics.hasCityHall = true; break;
+        case 'space_program': if (isComplete) metrics.hasSpaceProgram = true; break;
+        case 'stadium': if (isComplete) metrics.stadiumCount++; break;
+        case 'museum': if (isComplete) metrics.museumCount++; break;
+        case 'amusement_park': if (isComplete) metrics.hasAmusementPark = true; break;
+      }
+
+      // Rail overlay check (for non-rail buildings that have rail on them)
+      if (tile.hasRailOverlay && buildingType !== 'rail') metrics.railTiles++;
     }
   }
+
+  return metrics;
+}
+
+function calculateStatsFromMetrics(metrics: GridMetrics, size: number, budget: Budget, taxRate: number, effectiveTaxRate: number, services: ServiceCoverage): Stats {
+  const {
+    population, jobs, totalPollution, treeCount, waterCount, parkCount,
+    subwayTiles, subwayStations, railTiles, railStations,
+    hasAirport, hasCityHall, hasSpaceProgram, stadiumCount, museumCount, hasAmusementPark
+  } = metrics;
 
   // Calculate demand - subway network boosts commercial demand
   // Tax rate affects demand as BOTH a multiplier and additive modifier:
@@ -1511,87 +1643,30 @@ function calculateAverageCoverage(coverage: number[][]): number {
   return count > 0 ? total / count : 0;
 }
 
-// PERF: Update budget costs based on buildings - single pass through grid
-function updateBudgetCosts(grid: Tile[][], budget: Budget): Budget {
+// PERF: Update budget costs using pre-collected metrics (no grid scan)
+function updateBudgetFromMetrics(metrics: GridMetrics, budget: Budget): Budget {
   const newBudget = { ...budget };
-  
-  let policeCount = 0;
-  let fireCount = 0;
-  let hospitalCount = 0;
-  let schoolCount = 0;
-  let universityCount = 0;
-  let parkCount = 0;
-  let powerCount = 0;
-  let waterCount = 0;
-  let roadCount = 0;
-  let subwayTileCount = 0;
-  let subwayStationCount = 0;
 
-  // PERF: Single pass through grid instead of two separate loops
-  for (const row of grid) {
-    for (const tile of row) {
-      // Count subway tiles
-      if (tile.hasSubway) subwayTileCount++;
-      
-      // Count building types using switch for jump table optimization
-      switch (tile.building.type) {
-        case 'police_station': policeCount++; break;
-        case 'fire_station': fireCount++; break;
-        case 'hospital': hospitalCount++; break;
-        case 'school': schoolCount++; break;
-        case 'university': universityCount++; break;
-        case 'park': parkCount++; break;
-        case 'park_large': parkCount++; break;
-        case 'tennis': parkCount++; break;
-        case 'power_plant': powerCount++; break;
-        case 'water_tower': waterCount++; break;
-        case 'road': roadCount++; break;
-        case 'subway_station': subwayStationCount++; break;
-      }
-    }
-  }
-
-  newBudget.police.cost = policeCount * 50;
-  newBudget.fire.cost = fireCount * 50;
-  newBudget.health.cost = hospitalCount * 100;
-  newBudget.education.cost = schoolCount * 30 + universityCount * 100;
-  newBudget.transportation.cost = roadCount * 2 + subwayTileCount * 3 + subwayStationCount * 25;
-  newBudget.parks.cost = parkCount * 10;
-  newBudget.power.cost = powerCount * 150;
-  newBudget.water.cost = waterCount * 75;
+  newBudget.police.cost = metrics.policeCount * 50;
+  newBudget.fire.cost = metrics.fireCount * 50;
+  newBudget.health.cost = metrics.hospitalCount * 100;
+  newBudget.education.cost = metrics.schoolCount * 30 + metrics.universityCount * 100;
+  newBudget.transportation.cost = metrics.roadCount * 2 + metrics.subwayTiles * 3 + metrics.subwayStations * 25;
+  newBudget.parks.cost = metrics.parkCount * 10;
+  newBudget.power.cost = metrics.powerCount * 150;
+  newBudget.water.cost = metrics.waterTowerCount * 75;
 
   return newBudget;
 }
 
-// PERF: Generate advisor messages - single pass through grid for all building counts
-function generateAdvisorMessages(stats: Stats, services: ServiceCoverage, grid: Tile[][]): AdvisorMessage[] {
+// PERF: Generate advisor messages using pre-collected metrics (no grid scan)
+function generateAdvisorMessagesFromMetrics(stats: Stats, metrics: GridMetrics): AdvisorMessage[] {
   const messages: AdvisorMessage[] = [];
 
-  // PERF: Single pass through grid to collect all building stats
-  let unpoweredBuildings = 0;
-  let unwateredBuildings = 0;
-  let abandonedBuildings = 0;
-  let abandonedResidential = 0;
-  let abandonedCommercial = 0;
-  let abandonedIndustrial = 0;
-  
-  for (const row of grid) {
-    for (const tile of row) {
-      // Only count zoned buildings (not grass)
-      if (tile.zone !== 'none' && tile.building.type !== 'grass') {
-        if (!tile.building.powered) unpoweredBuildings++;
-        if (!tile.building.watered) unwateredBuildings++;
-      }
-      
-      // Count abandoned buildings
-      if (tile.building.abandoned) {
-        abandonedBuildings++;
-        if (tile.zone === 'residential') abandonedResidential++;
-        else if (tile.zone === 'commercial') abandonedCommercial++;
-        else if (tile.zone === 'industrial') abandonedIndustrial++;
-      }
-    }
-  }
+  const {
+    unpoweredBuildings, unwateredBuildings,
+    abandonedBuildings, abandonedResidential, abandonedCommercial, abandonedIndustrial
+  } = metrics;
 
   // Power advisor
   if (unpoweredBuildings > 0) {
@@ -1882,8 +1957,12 @@ export function simulateTick(state: GameState): GameState {
     }
   }
 
-  // Update budget costs
-  const newBudget = updateBudgetCosts(newGrid, state.budget);
+  // PERF: Collect all grid metrics in a single pass
+  // This replaces 3 separate O(n²) grid scans with 1
+  const metrics = collectGridMetrics(newGrid, size);
+
+  // Update budget costs using pre-collected metrics (no grid scan)
+  const newBudget = updateBudgetFromMetrics(metrics, state.budget);
 
   // Gradually move effectiveTaxRate toward taxRate
   // This creates a lagging effect so tax changes don't immediately impact demand
@@ -1891,8 +1970,8 @@ export function simulateTick(state: GameState): GameState {
   const taxRateDiff = state.taxRate - state.effectiveTaxRate;
   const newEffectiveTaxRate = state.effectiveTaxRate + taxRateDiff * 0.03;
 
-  // Calculate stats (using lagged effectiveTaxRate for demand calculations)
-  const newStats = calculateStats(newGrid, size, newBudget, state.taxRate, newEffectiveTaxRate, services);
+  // Calculate stats using pre-collected metrics (no grid scan)
+  const newStats = calculateStatsFromMetrics(metrics, size, newBudget, state.taxRate, newEffectiveTaxRate, services);
   newStats.money = state.stats.money;
 
   // Update money on month change
@@ -1928,8 +2007,8 @@ export function simulateTick(state: GameState): GameState {
     newYear++;
   }
 
-  // Generate advisor messages
-  const advisorMessages = generateAdvisorMessages(newStats, services, newGrid);
+  // Generate advisor messages using pre-collected metrics (no grid scan)
+  const advisorMessages = generateAdvisorMessagesFromMetrics(newStats, metrics);
 
   // Keep existing notifications
   const newNotifications = [...state.notifications];
@@ -2222,6 +2301,9 @@ function applyBuildingFootprint(
       } else {
         cell.building = createBuilding('empty');
         cell.building.level = 0;
+        // PERF: Store origin coordinates to avoid O(16) backward search in findBuildingOrigin
+        cell.building.originX = originX;
+        cell.building.originY = originY;
       }
       cell.zone = zone;
       cell.pollution = dx === 0 && dy === 0 ? stats.pollution : 0;
@@ -2379,6 +2461,7 @@ export function placeBuilding(
 
 // Find the origin tile of a multi-tile building that contains the given tile
 // Returns null if the tile is not part of a multi-tile building
+// PERF: Now uses cached originX/originY on empty tiles for O(1) lookup instead of O(16) search
 function findBuildingOrigin(
   grid: Tile[][],
   x: number,
@@ -2387,10 +2470,10 @@ function findBuildingOrigin(
 ): { originX: number; originY: number; buildingType: BuildingType } | null {
   const tile = grid[y]?.[x];
   if (!tile) return null;
-  
+
   // If this tile has an actual building (not empty), check if it's multi-tile
-  if (tile.building.type !== 'empty' && tile.building.type !== 'grass' && 
-      tile.building.type !== 'water' && tile.building.type !== 'road' && 
+  if (tile.building.type !== 'empty' && tile.building.type !== 'grass' &&
+      tile.building.type !== 'water' && tile.building.type !== 'road' &&
       tile.building.type !== 'rail' && tile.building.type !== 'tree') {
     const size = getBuildingSize(tile.building.type);
     if (size.width > 1 || size.height > 1) {
@@ -2398,11 +2481,25 @@ function findBuildingOrigin(
     }
     return null; // Single-tile building
   }
-  
+
   // If this is an 'empty' tile, it might be part of a multi-tile building
-  // Search nearby tiles to find the origin
   if (tile.building.type === 'empty') {
-    // Check up to 4 tiles away (max building size is 4x4)
+    // PERF: Use cached origin coordinates if available (O(1) lookup)
+    if (tile.building.originX !== undefined && tile.building.originY !== undefined) {
+      const originTile = grid[tile.building.originY]?.[tile.building.originX];
+      if (originTile && originTile.building.type !== 'empty' &&
+          originTile.building.type !== 'grass') {
+        return {
+          originX: tile.building.originX,
+          originY: tile.building.originY,
+          buildingType: originTile.building.type
+        };
+      }
+      // Origin was demolished, this empty tile is orphaned
+      return null;
+    }
+
+    // Fallback: Search nearby tiles to find the origin (for legacy saves without cached origins)
     const maxSize = 4;
     for (let dy = 0; dy < maxSize; dy++) {
       for (let dx = 0; dx < maxSize; dx++) {
@@ -2410,7 +2507,7 @@ function findBuildingOrigin(
         const checkY = y - dy;
         if (checkX >= 0 && checkY >= 0 && checkX < gridSize && checkY < gridSize) {
           const checkTile = grid[checkY][checkX];
-          if (checkTile.building.type !== 'empty' && 
+          if (checkTile.building.type !== 'empty' &&
               checkTile.building.type !== 'grass' &&
               checkTile.building.type !== 'water' &&
               checkTile.building.type !== 'road' &&
@@ -2427,7 +2524,7 @@ function findBuildingOrigin(
       }
     }
   }
-  
+
   return null;
 }
 

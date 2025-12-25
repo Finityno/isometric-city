@@ -214,6 +214,10 @@ export interface Building {
   constructionProgress: number; // 0-100, building is under construction until 100
   abandoned: boolean; // Building is abandoned due to low demand, produces nothing
   flipped?: boolean; // Horizontally mirror the sprite (used for waterfront buildings to face water)
+  // PERF: For 'empty' placeholder tiles in multi-tile buildings, store origin coordinates
+  // This avoids O(16) backward search in findBuildingOrigin
+  originX?: number;
+  originY?: number;
 }
 
 export interface Tile {

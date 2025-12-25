@@ -56,6 +56,7 @@ import {
 import {
   gridToScreen,
   screenToGrid,
+  invalidatePathCache,
 } from '@/components/game/utils';
 import {
   drawGreenBaseTile,
@@ -578,6 +579,9 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     
     // Reset traffic light timer
     trafficLightTimerRef.current = 0;
+
+    // PERF: Invalidate path cache when game changes (new roads may have been added/removed)
+    invalidatePathCache();
   }, [gameVersion]);
 
   // Sync isPanning state to ref for animation loop access
