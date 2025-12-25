@@ -406,6 +406,7 @@ export function useAircraftSystems(
       // Update contrail particles - shorter duration on mobile for performance
       const contrailMaxAge = isMobile ? 0.8 : CONTRAIL_MAX_AGE;
       const contrailSpawnInterval = isMobile ? 0.06 : CONTRAIL_SPAWN_INTERVAL;
+      // eslint-disable-next-line react-hooks/immutability -- intentional mutation of mutable ref state
       plane.contrail = plane.contrail
         .map(p => ({ ...p, age: p.age + delta, opacity: Math.max(0, 1 - p.age / contrailMaxAge) }))
         .filter(p => p.age < contrailMaxAge);
@@ -607,6 +608,7 @@ export function useAircraftSystems(
     
     for (const heli of helicoptersRef.current) {
       // Update rotor animation
+      // eslint-disable-next-line react-hooks/immutability -- intentional mutation of mutable ref state
       heli.rotorAngle += delta * 25; // Fast rotor spin
       
       // Update searchlight sweep animation (sinusoidal motion)

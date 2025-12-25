@@ -274,6 +274,7 @@ export function useBargeSystem(
     const updatedBarges: Barge[] = [];
     
     for (const barge of bargesRef.current) {
+      // eslint-disable-next-line react-hooks/immutability -- intentional mutation of mutable ref state
       barge.age += delta;
       
       // Update wake particles

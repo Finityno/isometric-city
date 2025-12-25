@@ -773,18 +773,19 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
   }, [visualHour, isMobile]);
 
   // Aircraft drawing functions using the generic helper
-  const drawAirplanes = useMemo(() =>
-    createAircraftDrawer(airplanesRef, drawAirplanesUtil, 200),
+  // Use useCallback to avoid accessing refs during render
+  const drawAirplanes = useCallback(
+    (ctx: CanvasRenderingContext2D) => createAircraftDrawer(airplanesRef, drawAirplanesUtil, 200)(ctx),
     [createAircraftDrawer]
   );
 
-  const drawHelicopters = useMemo(() =>
-    createAircraftDrawer(helicoptersRef, drawHelicoptersUtil, 100, true),
+  const drawHelicopters = useCallback(
+    (ctx: CanvasRenderingContext2D) => createAircraftDrawer(helicoptersRef, drawHelicoptersUtil, 100, true)(ctx),
     [createAircraftDrawer]
   );
 
-  const drawSeaplanes = useMemo(() =>
-    createAircraftDrawer(seaplanesRef, drawSeaplanesUtil, 200),
+  const drawSeaplanes = useCallback(
+    (ctx: CanvasRenderingContext2D) => createAircraftDrawer(seaplanesRef, drawSeaplanesUtil, 200)(ctx),
     [createAircraftDrawer]
   );
 
@@ -3712,6 +3713,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     
     // Clamp and set the new offset - this is a legitimate use case for responding to navigation requests
     const bounds = getMapBounds(zoom, canvasSize.width, canvasSize.height);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: responding to navigation target prop change
     setOffset({  
       x: Math.max(bounds.minOffsetX, Math.min(bounds.maxOffsetX, newOffset.x)),
       y: Math.max(bounds.minOffsetY, Math.min(bounds.maxOffsetY, newOffset.y)),
@@ -3913,9 +3915,8 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     }
   }, [isDragging, showsDragGrid, dragStartTile, placeAtTile, selectedTool, dragEndTile, checkAndDiscoverCities, findBuildingOrigin, setSelectedTile, isPanning, requestHoverCanvasRedraw]);
   
-  // Store wheel handler in ref to avoid re-attaching listener on every state change
-  const handleWheelRef = useRef<((e: WheelEvent) => void) | null>(null);
-  handleWheelRef.current = (e: WheelEvent) => {
+  // Wheel handler - use useCallback to get stable reference that captures latest state
+  const handleWheel = useCallback((e: WheelEvent) => {
     // Prevent browser zoom and page scroll
     e.preventDefault();
     e.stopPropagation();
@@ -3983,7 +3984,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
 
       setOffset(clampOffset(newOffset, zoom));
     }
-  };
+  }, [zoom, offset, clampOffset, setOffset, setZoom]);
 
   // Attach wheel event listener once with passive: false to allow preventDefault
   // This prevents browser zoom (Ctrl+scroll) from taking over
@@ -3991,11 +3992,10 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     const container = containerRef.current;
     if (!container) return;
 
-    const handler = (e: WheelEvent) => handleWheelRef.current?.(e);
-    container.addEventListener('wheel', handler, { passive: false });
+    container.addEventListener('wheel', handleWheel, { passive: false });
 
-    return () => container.removeEventListener('wheel', handler);
-  }, []);
+    return () => container.removeEventListener('wheel', handleWheel);
+  }, [handleWheel]);
 
   // Touch handlers for mobile
   const getTouchDistance = useCallback((touch1: React.Touch, touch2: React.Touch) => {

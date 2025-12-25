@@ -98,40 +98,43 @@ export const TileInfoPanel = memo(function TileInfoPanel({
   onClose,
   isMobile = false
 }: TileInfoPanelProps) {
-  // Early return for hidden/null state - most important optimization
+  // Memoize computed values - must be called before any early returns
+  const formattedBuildingName = useMemo(
+    () => tile ? formatBuildingName(tile.building.type) : '',
+    [tile]
+  );
+
+  const pollutionColorClass = useMemo(
+    () => tile ? getPollutionColorClass(tile.pollution) : '',
+    [tile]
+  );
+
+  const roundedPollution = useMemo(
+    () => tile ? Math.round(tile.pollution) : 0,
+    [tile]
+  );
+
+  // Memoize service values to avoid array access on each render
+  const serviceCoverage = useMemo(() => {
+    if (!tile || !services) return { police: 0, fire: 0, health: 0, education: 0 };
+    const { x, y } = tile;
+    return {
+      police: services.police[y]?.[x] ?? 0,
+      fire: services.fire[y]?.[x] ?? 0,
+      health: services.health[y]?.[x] ?? 0,
+      education: services.education[y]?.[x] ?? 0,
+    };
+  }, [services, tile]);
+
+  // Early return for hidden/null state - after all hooks
   if (!tile || !services) {
     return null;
   }
 
   const { x, y, building, zone, landValue, pollution } = tile;
-
-  // Memoize computed values to avoid recalculation on each render
-  const formattedBuildingName = useMemo(
-    () => formatBuildingName(building.type),
-    [building.type]
-  );
-
   const zoneConfig = ZONE_CONFIG[zone] || ZONE_CONFIG.none;
 
-  const pollutionColorClass = useMemo(
-    () => getPollutionColorClass(pollution),
-    [pollution]
-  );
-
-  const roundedPollution = useMemo(
-    () => Math.round(pollution),
-    [pollution]
-  );
-
-  // Memoize service values to avoid array access on each render
-  const serviceCoverage = useMemo(() => ({
-    police: services.police[y]?.[x] ?? 0,
-    fire: services.fire[y]?.[x] ?? 0,
-    health: services.health[y]?.[x] ?? 0,
-    education: services.education[y]?.[x] ?? 0,
-  }), [services, x, y]);
-
-  // Memoize fire damage if on fire
+  // Compute fire damage if on fire
   const fireProgress = building.onFire ? Math.round(building.fireProgress ?? 0) : 0;
 
   // Pre-compute container classes (stable per mobile state)

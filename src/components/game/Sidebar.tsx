@@ -117,12 +117,12 @@ const SubmenuToolButton = memo(function SubmenuToolButton({
   canAfford: boolean;
   onSelectTool: (tool: Tool) => void;
 }) {
-  const info = TOOL_INFO[tool];
-  if (!info) return null;
-
   const handleClick = useCallback(() => {
     onSelectTool(tool);
   }, [onSelectTool, tool]);
+
+  const info = TOOL_INFO[tool];
+  if (!info) return null;
 
   return (
     <Button
@@ -154,12 +154,12 @@ const DirectToolButton = memo(function DirectToolButton({
   canAfford: boolean;
   onSelectTool: (tool: Tool) => void;
 }) {
-  const info = TOOL_INFO[tool];
-  if (!info) return null;
-
   const handleClick = useCallback(() => {
     onSelectTool(tool);
   }, [onSelectTool, tool]);
+
+  const info = TOOL_INFO[tool];
+  if (!info) return null;
 
   return (
     <Button

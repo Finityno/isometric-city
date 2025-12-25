@@ -254,6 +254,7 @@ export function useSeaplaneSystem(
       // Update contrail particles when at altitude
       const contrailMaxAge = isMobile ? 0.8 : CONTRAIL_MAX_AGE;
       const contrailSpawnInterval = isMobile ? 0.06 : CONTRAIL_SPAWN_INTERVAL;
+      // eslint-disable-next-line react-hooks/immutability -- intentional mutation of mutable ref state
       seaplane.contrail = seaplane.contrail
         .map(p => ({ ...p, age: p.age + delta, opacity: Math.max(0, 1 - p.age / contrailMaxAge) }))
         .filter(p => p.age < contrailMaxAge);
