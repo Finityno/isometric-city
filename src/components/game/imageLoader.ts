@@ -40,7 +40,7 @@ export function loadImage(src: string): Promise<HTMLImageElement> {
   if (imageCache.has(src)) {
     return Promise.resolve(imageCache.get(src)!);
   }
-  
+
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
@@ -48,7 +48,9 @@ export function loadImage(src: string): Promise<HTMLImageElement> {
       notifyImageLoaded(); // Notify listeners that a new image is available
       resolve(img);
     };
-    img.onerror = reject;
+    img.onerror = (e) => {
+      reject(new Error(`Failed to load image: ${src}`, { cause: e }));
+    };
     img.src = src;
   });
 }
@@ -103,16 +105,25 @@ export function filterBackgroundColor(img: HTMLImageElement, threshold: number =
 
       // Put the modified image data back
       ctx.putImageData(imageData, 0, 0);
-      
-      // Create a new image from the processed canvas
-      const filteredImg = new Image();
-      filteredImg.onload = () => {
-        resolve(filteredImg);
-      };
-      filteredImg.onerror = () => {
-        reject(new Error('Failed to create filtered image'));
-      };
-      filteredImg.src = canvas.toDataURL();
+
+      // Use toBlob instead of toDataURL - more efficient and async
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          reject(new Error('Failed to create blob from filtered image'));
+          return;
+        }
+
+        const url = URL.createObjectURL(blob);
+        const filteredImg = new Image();
+        filteredImg.onload = () => {
+          resolve(filteredImg);
+        };
+        filteredImg.onerror = () => {
+          URL.revokeObjectURL(url);
+          reject(new Error('Failed to create filtered image from blob'));
+        };
+        filteredImg.src = url;
+      }, 'image/png');
     } catch (error) {
       reject(error);
     }
@@ -164,8 +175,21 @@ export function getCachedImage(src: string, filtered: boolean = false): HTMLImag
 }
 
 /**
- * Clear the image cache
+ * Clear the image cache and revoke any blob URLs to free VRAM
  */
 export function clearImageCache(): void {
+  // Revoke blob URLs to free memory
+  imageCache.forEach(img => {
+    if (img.src.startsWith('blob:')) {
+      URL.revokeObjectURL(img.src);
+    }
+  });
   imageCache.clear();
+}
+
+/**
+ * Clear all image load callbacks (useful for cleanup)
+ */
+export function clearImageLoadCallbacks(): void {
+  imageLoadCallbacks.clear();
 }

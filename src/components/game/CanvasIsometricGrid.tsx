@@ -253,6 +253,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
   const crossingFlashTimerRef = useRef(0);
   const crossingGateAnglesRef = useRef<Map<number, number>>(new Map()); // key = y * gridSize + x, value = angle (0=open, 90=closed)
   const crossingPositionsRef = useRef<{x: number, y: number}[]>([]); // Cached crossing positions for O(1) iteration
+  const crossingKeySetRef = useRef<Set<number>>(new Set()); // PERF: Reused Set to avoid allocation per frame
 
   // Firework system refs
   const fireworksRef = useRef<Firework[]>([]);
@@ -502,6 +503,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     drawSmog,
   } = useEffectsSystems(effectsSystemRefs, effectsSystemState);
   
+  // Sync grid state to ref and invalidate caches
   useEffect(() => {
     worldStateRef.current.grid = grid;
     worldStateRef.current.gridSize = gridSize;
@@ -511,21 +513,13 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     crossingPositionsRef.current = findRailroadCrossings(grid, gridSize);
   }, [grid, gridSize]);
 
+  // PERF: Consolidated world state sync - single effect instead of 4 separate ones
   useEffect(() => {
     worldStateRef.current.offset = offset;
-  }, [offset]);
-
-  useEffect(() => {
     worldStateRef.current.zoom = zoom;
-  }, [zoom]);
-
-  useEffect(() => {
     worldStateRef.current.speed = speed;
-  }, [speed]);
-
-  useEffect(() => {
     worldStateRef.current.canvasSize = canvasSize;
-  }, [canvasSize]);
+  }, [offset, zoom, speed, canvasSize]);
 
   // Clear all vehicles/entities when game version changes (new game, load state, etc.)
   useEffect(() => {
@@ -695,74 +689,19 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     return generateTourWaypoints(currentGrid, currentGridSize, startTileX, startTileY);
   }, []);
 
-  // Draw airplanes with contrails (uses extracted utility)
-  const drawAirplanes = useCallback((ctx: CanvasRenderingContext2D) => {
-    const { offset: currentOffset, zoom: currentZoom, grid: currentGrid, gridSize: currentGridSize } = worldStateRef.current;
-    const canvas = ctx.canvas;
-    const dpr = window.devicePixelRatio || 1;
-    
-    // Early exit if no airplanes
-    if (!currentGrid || currentGridSize <= 0 || airplanesRef.current.length === 0) {
-      return;
-    }
-    
-    ctx.save();
-    ctx.scale(dpr * currentZoom, dpr * currentZoom);
-    ctx.translate(currentOffset.x / currentZoom, currentOffset.y / currentZoom);
-    
-    const viewWidth = canvas.width / (dpr * currentZoom);
-    const viewHeight = canvas.height / (dpr * currentZoom);
-    const viewBounds = {
-      viewLeft: -currentOffset.x / currentZoom - 200,
-      viewTop: -currentOffset.y / currentZoom - 200,
-      viewRight: viewWidth - currentOffset.x / currentZoom + 200,
-      viewBottom: viewHeight - currentOffset.y / currentZoom + 200,
-    };
-    
-    // Use extracted utility function for drawing
-    drawAirplanesUtil(ctx, airplanesRef.current, viewBounds, visualHour, navLightFlashTimerRef.current, isMobile);
-    
-    ctx.restore();
-  }, [visualHour, isMobile]);
-
-  // Draw helicopters with rotor wash (uses extracted utility)
-  const drawHelicopters = useCallback((ctx: CanvasRenderingContext2D) => {
-    const { offset: currentOffset, zoom: currentZoom, grid: currentGrid, gridSize: currentGridSize } = worldStateRef.current;
-    const canvas = ctx.canvas;
-    const dpr = window.devicePixelRatio || 1;
-    
-    // Early exit if no helicopters
-    if (!currentGrid || currentGridSize <= 0 || helicoptersRef.current.length === 0) {
-      return;
-    }
-    
-    ctx.save();
-    ctx.scale(dpr * currentZoom, dpr * currentZoom);
-    ctx.translate(currentOffset.x / currentZoom, currentOffset.y / currentZoom);
-    
-    const viewWidth = canvas.width / (dpr * currentZoom);
-    const viewHeight = canvas.height / (dpr * currentZoom);
-    const viewBounds = {
-      viewLeft: -currentOffset.x / currentZoom - 100,
-      viewTop: -currentOffset.y / currentZoom - 100,
-      viewRight: viewWidth - currentOffset.x / currentZoom + 100,
-      viewBottom: viewHeight - currentOffset.y / currentZoom + 100,
-    };
-    
-    // Use extracted utility function for drawing
-    drawHelicoptersUtil(ctx, helicoptersRef.current, viewBounds, visualHour, navLightFlashTimerRef.current, isMobile, currentZoom);
-    
-    ctx.restore();
-  }, [visualHour, isMobile]);
-
-  // Draw seaplanes with wakes and contrails (uses extracted utility)
-  const drawSeaplanes = useCallback((ctx: CanvasRenderingContext2D) => {
+  // Generic aircraft drawing helper - reduces duplication across airplane/helicopter/seaplane drawing
+  const createAircraftDrawer = useCallback(<T,>(
+    aircraftRef: React.MutableRefObject<T[]>,
+    drawFn: (ctx: CanvasRenderingContext2D, aircraft: T[], viewBounds: { viewLeft: number; viewTop: number; viewRight: number; viewBottom: number }, hour: number, navTimer: number, mobile: boolean, zoom?: number) => void,
+    viewPadding: number,
+    passZoom: boolean = false
+  ) => (ctx: CanvasRenderingContext2D) => {
     const { offset: currentOffset, zoom: currentZoom, grid: currentGrid, gridSize: currentGridSize } = worldStateRef.current;
     const canvas = ctx.canvas;
     const dpr = window.devicePixelRatio || 1;
 
-    // Early exit if no seaplanes
-    if (!currentGrid || currentGridSize <= 0 || seaplanesRef.current.length === 0) {
+    // Early exit if no aircraft or invalid grid
+    if (!currentGrid || currentGridSize <= 0 || aircraftRef.current.length === 0) {
       return;
     }
 
@@ -773,17 +712,37 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     const viewWidth = canvas.width / (dpr * currentZoom);
     const viewHeight = canvas.height / (dpr * currentZoom);
     const viewBounds = {
-      viewLeft: -currentOffset.x / currentZoom - 200,
-      viewTop: -currentOffset.y / currentZoom - 200,
-      viewRight: viewWidth - currentOffset.x / currentZoom + 200,
-      viewBottom: viewHeight - currentOffset.y / currentZoom + 200,
+      viewLeft: -currentOffset.x / currentZoom - viewPadding,
+      viewTop: -currentOffset.y / currentZoom - viewPadding,
+      viewRight: viewWidth - currentOffset.x / currentZoom + viewPadding,
+      viewBottom: viewHeight - currentOffset.y / currentZoom + viewPadding,
     };
 
-    // Use extracted utility function for drawing
-    drawSeaplanesUtil(ctx, seaplanesRef.current, viewBounds, visualHour, navLightFlashTimerRef.current, isMobile);
+    // Call the draw utility function
+    if (passZoom) {
+      drawFn(ctx, aircraftRef.current, viewBounds, visualHour, navLightFlashTimerRef.current, isMobile, currentZoom);
+    } else {
+      drawFn(ctx, aircraftRef.current, viewBounds, visualHour, navLightFlashTimerRef.current, isMobile);
+    }
 
     ctx.restore();
   }, [visualHour, isMobile]);
+
+  // Aircraft drawing functions using the generic helper
+  const drawAirplanes = useMemo(() =>
+    createAircraftDrawer(airplanesRef, drawAirplanesUtil, 200),
+    [createAircraftDrawer]
+  );
+
+  const drawHelicopters = useMemo(() =>
+    createAircraftDrawer(helicoptersRef, drawHelicoptersUtil, 100, true),
+    [createAircraftDrawer]
+  );
+
+  const drawSeaplanes = useMemo(() =>
+    createAircraftDrawer(seaplanesRef, drawSeaplanesUtil, 200),
+    [createAircraftDrawer]
+  );
 
   // Boats are now handled by useBoatSystem hook (see above)
 
@@ -907,35 +866,29 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
   
   // Update canvas size on resize with high-DPI support
   useEffect(() => {
+    // Helper to set display size on a canvas element
+    const setCanvasDisplaySize = (canvas: HTMLCanvasElement | null, width: string, height: string) => {
+      if (canvas) {
+        canvas.style.width = width;
+        canvas.style.height = height;
+      }
+    };
+
     const updateSize = () => {
       if (containerRef.current && canvasRef.current) {
         const dpr = window.devicePixelRatio || 1;
         const rect = containerRef.current.getBoundingClientRect();
-        
-        // Set display size
-        canvasRef.current.style.width = `${rect.width}px`;
-        canvasRef.current.style.height = `${rect.height}px`;
-        if (hoverCanvasRef.current) {
-          hoverCanvasRef.current.style.width = `${rect.width}px`;
-          hoverCanvasRef.current.style.height = `${rect.height}px`;
-        }
-        if (carsCanvasRef.current) {
-          carsCanvasRef.current.style.width = `${rect.width}px`;
-          carsCanvasRef.current.style.height = `${rect.height}px`;
-        }
-        if (buildingsCanvasRef.current) {
-          buildingsCanvasRef.current.style.width = `${rect.width}px`;
-          buildingsCanvasRef.current.style.height = `${rect.height}px`;
-        }
-        if (airCanvasRef.current) {
-          airCanvasRef.current.style.width = `${rect.width}px`;
-          airCanvasRef.current.style.height = `${rect.height}px`;
-        }
-        if (lightingCanvasRef.current) {
-          lightingCanvasRef.current.style.width = `${rect.width}px`;
-          lightingCanvasRef.current.style.height = `${rect.height}px`;
-        }
-        
+        const widthPx = `${rect.width}px`;
+        const heightPx = `${rect.height}px`;
+
+        // Set display size on all canvas layers
+        setCanvasDisplaySize(canvasRef.current, widthPx, heightPx);
+        setCanvasDisplaySize(hoverCanvasRef.current, widthPx, heightPx);
+        setCanvasDisplaySize(carsCanvasRef.current, widthPx, heightPx);
+        setCanvasDisplaySize(buildingsCanvasRef.current, widthPx, heightPx);
+        setCanvasDisplaySize(airCanvasRef.current, widthPx, heightPx);
+        setCanvasDisplaySize(lightingCanvasRef.current, widthPx, heightPx);
+
         // Set actual size in memory (scaled for DPI)
         setCanvasSize({
           width: Math.round(rect.width * dpr),
@@ -2878,8 +2831,9 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     }
     
     // Draw railroad crossing signals and gates AFTER base tiles to ensure they appear on top
-    // PERF: Build a Set of crossing keys for O(1) lookup instead of calling isRailroadCrossing
-    const crossingKeySet = new Set<number>();
+    // PERF: Reuse Set to avoid allocation per frame - clear and rebuild
+    const crossingKeySet = crossingKeySetRef.current;
+    crossingKeySet.clear();
     const cachedCrossings = crossingPositionsRef.current;
     for (let i = 0; i < cachedCrossings.length; i++) {
       const { x, y } = cachedCrossings[i];
@@ -3724,23 +3678,26 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
   }, [navigationTarget, zoom, canvasSize.width, canvasSize.height, getMapBounds, onNavigationComplete]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    // PERF: Read from worldStateRef to reduce callback dependencies
+    const { offset: currentOffset, zoom: currentZoom, gridSize: currentGridSize, grid: currentGrid } = worldStateRef.current;
+
     if (!isPanning && panCandidateRef.current) {
       const { startX, startY } = panCandidateRef.current;
       const dx = e.clientX - startX;
       const dy = e.clientY - startY;
       if (Math.abs(dx) >= PAN_DRAG_THRESHOLD || Math.abs(dy) >= PAN_DRAG_THRESHOLD) {
         setIsPanning(true);
-        setDragStart({ x: startX - offset.x, y: startY - offset.y });
+        setDragStart({ x: startX - currentOffset.x, y: startY - currentOffset.y });
         panCandidateRef.current = null;
         // Clear hover when panning starts
         hoveredTileRef.current = null;
         setHoveredTile(null);
         setHoveredIncident(null);
         const newOffset = {
-          x: e.clientX - (startX - offset.x),
-          y: e.clientY - (startY - offset.y),
+          x: e.clientX - (startX - currentOffset.x),
+          y: e.clientY - (startY - currentOffset.y),
         };
-        setOffset(clampOffset(newOffset, zoom));
+        setOffset(clampOffset(newOffset, currentZoom));
         return;
       }
     }
@@ -3751,17 +3708,17 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
         x: e.clientX - dragStart.x,
         y: e.clientY - dragStart.y,
       };
-      setOffset(clampOffset(newOffset, zoom));
+      setOffset(clampOffset(newOffset, currentZoom));
       return;
     }
-    
+
     const rect = containerRef.current?.getBoundingClientRect();
     if (rect) {
-      const mouseX = (e.clientX - rect.left) / zoom;
-      const mouseY = (e.clientY - rect.top) / zoom;
-      const { gridX, gridY } = screenToGrid(mouseX, mouseY, offset.x / zoom, offset.y / zoom);
-      
-      if (gridX >= 0 && gridX < gridSize && gridY >= 0 && gridY < gridSize) {
+      const mouseX = (e.clientX - rect.left) / currentZoom;
+      const mouseY = (e.clientY - rect.top) / currentZoom;
+      const { gridX, gridY } = screenToGrid(mouseX, mouseY, currentOffset.x / currentZoom, currentOffset.y / currentZoom);
+
+      if (gridX >= 0 && gridX < currentGridSize && gridY >= 0 && gridY < currentGridSize) {
         // PERF: Update ref directly to avoid React re-renders, then request canvas redraw
         const prevHover = hoveredTileRef.current;
         if (!prevHover || prevHover.x !== gridX || prevHover.y !== gridY) {
@@ -3777,7 +3734,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
         }
         
         // Check for fire or crime incidents at this tile for tooltip display
-        const tile = grid[gridY]?.[gridX];
+        const tile = currentGrid[gridY]?.[gridX];
         const crimeKey = `${gridX},${gridY}`;
         const crimeIncident = activeCrimeIncidentsRef.current.get(crimeKey);
         
@@ -3855,7 +3812,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
         }
       }
     }
-  }, [isPanning, dragStart, offset, zoom, gridSize, isDragging, showsDragGrid, dragStartTile, selectedTool, roadDrawDirection, supportsDragPlace, placeAtTile, clampOffset, grid, requestHoverCanvasRedraw]);
+  }, [isPanning, dragStart, isDragging, showsDragGrid, dragStartTile, selectedTool, roadDrawDirection, supportsDragPlace, placeAtTile, clampOffset, requestHoverCanvasRedraw]);
   
   const handleMouseUp = useCallback(() => {
     if (panCandidateRef.current && !isPanning && selectedTool === 'select') {
