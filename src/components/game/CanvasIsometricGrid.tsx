@@ -257,6 +257,24 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
   const roadAnalysisCacheRef = useRef<Map<string, ReturnType<typeof analyzeMergedRoad>>>(new Map());
   const roadAnalysisCacheVersionRef = useRef(-1);
 
+  // LIGHTING CACHE: Pre-compute all light sources based on grid (not viewport)
+  // This ensures lights stay in consistent positions when scrolling/zooming
+  type CachedLight = {
+    gridX: number;
+    gridY: number;
+    screenX: number;  // Pre-computed screen position
+    screenY: number;
+    type: 'road' | 'building';
+    buildingType?: string;
+    seed: number;  // Deterministic seed for window randomization
+    isSpecial?: boolean;  // Hospital, fire station, etc.
+    specialType?: string;
+  };
+  const lightingCacheRef = useRef<{
+    lights: CachedLight[];
+    gridVersion: number;
+  }>({ lights: [], gridVersion: -1 });
+
   // PERF: Render queue arrays cached across frames to reduce GC pressure
   // These are cleared at the start of each render frame with .length = 0
   type BuildingDrawItem = { screenX: number; screenY: number; tile: Tile; depth: number };
@@ -3296,43 +3314,90 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     return () => cancelAnimationFrame(animationFrameId);
   }, [canvasSize.width, canvasSize.height, updateCars, drawCars, spawnCrimeIncidents, updateCrimeIncidents, updateEmergencyVehicles, drawEmergencyVehicles, updatePedestrians, drawPedestrians, drawRecreationPedestrians, updateAirplanes, drawAirplanes, updateHelicopters, drawHelicopters, updateSeaplanes, drawSeaplanes, updateBoats, drawBoats, updateBarges, drawBarges, updateTrains, drawTrainsCallback, drawIncidentIndicators, updateFireworks, drawFireworks, updateSmog, drawSmog, visualHour, isMobile, grid, gridSize, speed]);
   
-  // Day/Night cycle lighting rendering - optimized for performance
+  // Day/Night cycle lighting rendering - with CACHED light positions for consistency
+  // Step 1: Rebuild light cache when grid changes (not on scroll/zoom)
+  useEffect(() => {
+    const currentVersion = gridVersionRef.current;
+    if (lightingCacheRef.current.gridVersion === currentVersion) return;
+
+    // Rebuild the light cache from scratch
+    const nonLitTypes = new Set(['grass', 'empty', 'water', 'road', 'tree', 'park', 'park_large', 'tennis']);
+    const specialTypes = new Set(['hospital', 'fire_station', 'police_station', 'power_plant']);
+    const lights: typeof lightingCacheRef.current.lights = [];
+
+    // Iterate through ENTIRE grid to cache ALL potential light sources
+    for (let y = 0; y < gridSize; y++) {
+      for (let x = 0; x < gridSize; x++) {
+        const tile = grid[y][x];
+        const buildingType = tile.building.type;
+
+        // Pre-compute screen position (deterministic, won't change)
+        const screenX = (x - y) * TILE_WIDTH / 2;
+        const screenY = (x + y) * TILE_HEIGHT / 2;
+        const seed = x * 10000 + y; // Deterministic seed for this tile
+
+        if (buildingType === 'road') {
+          lights.push({
+            gridX: x,
+            gridY: y,
+            screenX,
+            screenY,
+            type: 'road',
+            seed,
+          });
+        } else if (!nonLitTypes.has(buildingType) && tile.building.powered) {
+          const isSpecial = specialTypes.has(buildingType);
+          lights.push({
+            gridX: x,
+            gridY: y,
+            screenX,
+            screenY,
+            type: 'building',
+            buildingType,
+            seed,
+            isSpecial,
+            specialType: isSpecial ? buildingType : undefined,
+          });
+        }
+      }
+    }
+
+    lightingCacheRef.current = { lights, gridVersion: currentVersion };
+  }, [grid, gridSize]);
+
+  // Step 2: Render lighting using cached positions (fast viewport filtering only)
   useEffect(() => {
     const canvas = lightingCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // PERF: Hide lighting during panning/zooming for better performance
-    // On mobile: always hide during pan/zoom
-    // On desktop: hide during rapid panning when zoomed out
-    const isDesktopPanningZoomedOut = !isMobile && isPanningRef.current && zoom < 0.6;
-    if ((isMobile && (isPanningRef.current || isPinchZoomingRef.current)) || isDesktopPanningZoomedOut) {
+    // PERF: Hide lighting during panning/zooming on mobile for better performance
+    if (isMobile && (isPanningRef.current || isPinchZoomingRef.current)) {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       return;
     }
-    
+
     const dpr = window.devicePixelRatio || 1;
-    
+
     // Calculate darkness based on visualHour (0-23)
-    // Dawn: 5-7, Day: 7-18, Dusk: 18-20, Night: 20-5
     const getDarkness = (h: number): number => {
-      if (h >= 7 && h < 18) return 0; // Full daylight
-      if (h >= 5 && h < 7) return 1 - (h - 5) / 2; // Dawn transition
-      if (h >= 18 && h < 20) return (h - 18) / 2; // Dusk transition
-      return 1; // Night
+      if (h >= 7 && h < 18) return 0;
+      if (h >= 5 && h < 7) return 1 - (h - 5) / 2;
+      if (h >= 18 && h < 20) return (h - 18) / 2;
+      return 1;
     };
-    
+
     const darkness = getDarkness(visualHour);
-    
+
     // Clear canvas first
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
-    // If it's full daylight, just clear and return (early exit)
+
+    // If it's full daylight, just clear and return
     if (darkness <= 0.01) return;
-    
+
     // Get ambient color based on time
     const getAmbientColor = (h: number): { r: number; g: number; b: number } => {
       if (h >= 7 && h < 18) return { r: 255, g: 255, b: 255 };
@@ -3346,108 +3411,69 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
       }
       return { r: 20, g: 30, b: 60 };
     };
-    
+
     const ambient = getAmbientColor(visualHour);
-    
+
     // Apply darkness overlay
     const alpha = darkness * 0.6;
     ctx.fillStyle = `rgba(${ambient.r}, ${ambient.g}, ${ambient.b}, ${alpha})`;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    
-    // Calculate viewport bounds once
+
+    // Calculate viewport bounds for filtering cached lights
     const viewWidth = canvas.width / (dpr * zoom);
     const viewHeight = canvas.height / (dpr * zoom);
-    const viewLeft = -offset.x / zoom - TILE_WIDTH * 2;
-    const viewTop = -offset.y / zoom - TILE_HEIGHT * 4;
-    const viewRight = viewWidth - offset.x / zoom + TILE_WIDTH * 2;
-    const viewBottom = viewHeight - offset.y / zoom + TILE_HEIGHT * 4;
-    
-    // PERF: Pre-compute visible diagonal range to skip entire rows of tiles
-    // In isometric rendering, screenY = (x + y) * (TILE_HEIGHT / 2), so sum = x + y = screenY * 2 / TILE_HEIGHT
-    // Add padding for tall buildings that may extend above their tile position
-    const visibleMinSum = Math.max(0, Math.floor((viewTop - TILE_HEIGHT * 6) * 2 / TILE_HEIGHT));
-    const visibleMaxSum = Math.min(gridSize * 2 - 2, Math.ceil((viewBottom + TILE_HEIGHT) * 2 / TILE_HEIGHT));
-    
-    const gridToScreen = (gx: number, gy: number) => ({
-      screenX: (gx - gy) * TILE_WIDTH / 2,
-      screenY: (gx + gy) * TILE_HEIGHT / 2,
-    });
-    
-    const lightIntensity = Math.min(1, darkness * 1.3);
-    
-    // Pre-calculate pseudo-random function
+    const viewLeft = -offset.x / zoom - TILE_WIDTH * 3;
+    const viewTop = -offset.y / zoom - TILE_HEIGHT * 6;
+    const viewRight = viewWidth - offset.x / zoom + TILE_WIDTH * 3;
+    const viewBottom = viewHeight - offset.y / zoom + TILE_HEIGHT * 3;
+
+    const lightIntensity = Math.min(1, darkness * 1.2);
+
+    // Deterministic pseudo-random function (stable across renders)
     const pseudoRandom = (seed: number, n: number) => {
       const s = Math.sin(seed + n * 12.9898) * 43758.5453;
       return s - Math.floor(s);
     };
-    
-    // Set for building types that are not lit
-    const nonLitTypes = new Set(['grass', 'empty', 'water', 'road', 'tree', 'park', 'park_large', 'tennis']);
+
     const residentialTypes = new Set(['house_small', 'house_medium', 'mansion', 'apartment_low', 'apartment_high']);
     const commercialTypes = new Set(['shop_small', 'shop_medium', 'office_low', 'office_high', 'mall']);
-    
-    // Collect light sources in a single pass through visible tiles
-    const lightCutouts: Array<{x: number, y: number, type: 'road' | 'building', buildingType?: string, seed?: number}> = [];
-    const coloredGlows: Array<{x: number, y: number, type: string}> = [];
 
-    // PERF: Adaptive light sampling based on zoom level, darkness, and device
-    // More aggressive sampling when zoomed out or at full night (lights cause compositor overhead)
-    const isFullNight = darkness >= 0.95; // Full darkness = more compositor overhead
-    const roadSampleRate = isMobile ? 3 : (isFullNight ? 3 : (zoom < 0.5 ? 4 : zoom < 0.8 ? 2 : 1));
-    const buildingSampleRate = isMobile ? 2 : (isFullNight ? 2 : (zoom < 0.5 ? 3 : 1));
-    // PERF: Cap total lights to prevent frame drops in dense cities
-    // Lower cap at full night to reduce compositor overhead when blending with other canvases
-    const MAX_LIGHTS = isMobile ? 100 : (isFullNight ? 200 : 400);
-    let roadCounter = 0;
-    let buildingCounter = 0;
-    
-    // PERF: Only iterate through diagonal bands that intersect the visible viewport
-    // This skips entire rows of tiles that can't possibly be visible, significantly reducing iterations
-    for (let sum = visibleMinSum; sum <= visibleMaxSum; sum++) {
-      for (let x = Math.max(0, sum - gridSize + 1); x <= Math.min(sum, gridSize - 1); x++) {
-        const y = sum - x;
-        if (y < 0 || y >= gridSize) continue;
-        
-        const { screenX, screenY } = gridToScreen(x, y);
-        
-        // Viewport culling for horizontal bounds
-        if (screenX + TILE_WIDTH < viewLeft || screenX > viewRight ||
-            screenY + TILE_HEIGHT * 3 < viewTop || screenY > viewBottom) {
-          continue;
-        }
-        
-        const tile = grid[y][x];
-        const buildingType = tile.building.type;
-        
-        // PERF: Early exit if we've hit the max light count
-        if (lightCutouts.length >= MAX_LIGHTS) break;
+    // Get cached lights and filter by viewport
+    const cachedLights = lightingCacheRef.current.lights;
 
-        if (buildingType === 'road') {
-          roadCounter++;
-          // PERF: Adaptive road light sampling based on zoom
-          if (roadCounter % roadSampleRate === 0) {
-            lightCutouts.push({ x, y, type: 'road' });
-            // PERF: Skip colored glows on mobile, when zoomed out, and at full night
-            if (!isMobile && !isFullNight && zoom >= 0.7) {
-              coloredGlows.push({ x, y, type: 'road' });
-            }
-          }
-        } else if (!nonLitTypes.has(buildingType) && tile.building.powered) {
-          buildingCounter++;
-          // PERF: Adaptive building light sampling based on zoom
-          if (buildingCounter % buildingSampleRate === 0) {
-            lightCutouts.push({ x, y, type: 'building', buildingType, seed: x * 1000 + y });
+    // Filter visible lights from cache - NO LIMIT, show ALL lights in viewport
+    // Sampling is only used on mobile or at very low zoom for performance
+    const visibleLights: typeof cachedLights = [];
+    const visibleSpecialGlows: typeof cachedLights = [];
 
-            // Check for special colored glows (skip on mobile, when zoomed out, and at full night for performance)
-            if (!isMobile && !isFullNight && zoom >= 0.6 && (buildingType === 'hospital' || buildingType === 'fire_station' ||
-                buildingType === 'police_station' || buildingType === 'power_plant')) {
-              coloredGlows.push({ x, y, type: buildingType });
-            }
-          }
+    // Only sample on mobile or when extremely zoomed out - otherwise show ALL lights
+    const shouldSample = isMobile || zoom < 0.35;
+    const roadSampleMod = isMobile ? 2 : 3;
+    const buildingSampleMod = isMobile ? 2 : 2;
+
+    for (const light of cachedLights) {
+      // Viewport culling using pre-computed screen positions
+      if (light.screenX + TILE_WIDTH < viewLeft || light.screenX > viewRight ||
+          light.screenY + TILE_HEIGHT * 3 < viewTop || light.screenY > viewBottom) {
+        continue;
+      }
+
+      // Only sample when necessary for performance (mobile or very zoomed out)
+      if (shouldSample) {
+        const tileIndex = light.gridX + light.gridY;
+        if (light.type === 'road') {
+          if (tileIndex % roadSampleMod !== 0) continue;
+        } else {
+          if (tileIndex % buildingSampleMod !== 0) continue;
         }
       }
-      // PERF: Break outer loop if max lights reached
-      if (lightCutouts.length >= MAX_LIGHTS) break;
+
+      visibleLights.push(light);
+
+      // Collect special glows (always show these when in view)
+      if (light.isSpecial && !isMobile && zoom >= 0.4) {
+        visibleSpecialGlows.push(light);
+      }
     }
 
     // Draw light cutouts (destination-out)
@@ -3455,13 +3481,13 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     ctx.save();
     ctx.scale(dpr * zoom, dpr * zoom);
     ctx.translate(offset.x / zoom, offset.y / zoom);
-    
-    for (const light of lightCutouts) {
-      const { screenX, screenY } = gridToScreen(light.x, light.y);
-      const tileCenterX = screenX + TILE_WIDTH / 2;
-      const tileCenterY = screenY + TILE_HEIGHT / 2;
-      
+
+    for (const light of visibleLights) {
+      const tileCenterX = light.screenX + TILE_WIDTH / 2;
+      const tileCenterY = light.screenY + TILE_HEIGHT / 2;
+
       if (light.type === 'road') {
+        // Road light - consistent radius and position
         const lightRadius = 28;
         const gradient = ctx.createRadialGradient(tileCenterX, tileCenterY, 0, tileCenterX, tileCenterY, lightRadius);
         gradient.addColorStop(0, `rgba(255, 255, 255, ${0.75 * lightIntensity})`);
@@ -3471,16 +3497,14 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
         ctx.beginPath();
         ctx.arc(tileCenterX, tileCenterY, lightRadius, 0, Math.PI * 2);
         ctx.fill();
-      } else if (light.type === 'building' && light.buildingType && light.seed !== undefined) {
+      } else if (light.type === 'building' && light.buildingType) {
         const buildingType = light.buildingType;
         const isResidential = residentialTypes.has(buildingType);
         const isCommercial = commercialTypes.has(buildingType);
         const glowStrength = isCommercial ? 0.9 : isResidential ? 0.65 : 0.75;
-        
-        // PERF: Skip individual window lights on mobile and when zoomed out (they're not visible)
-        // Only show window lights when zoomed in enough to see them
-        if (!isMobile && zoom >= 0.8) {
-          // PERF: Reduce window counts for better performance
+
+        // Window lights - only at high zoom, with STABLE positions from cached seed
+        if (!isMobile && zoom >= 0.7) {
           let numWindows = 1;
           if (buildingType.includes('medium') || buildingType.includes('low')) numWindows = 2;
           if (buildingType.includes('high') || buildingType === 'mall') numWindows = 3;
@@ -3490,9 +3514,11 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
           const buildingHeight = -18;
 
           for (let i = 0; i < numWindows; i++) {
+            // Use cached seed for deterministic window positions
             const isLit = pseudoRandom(light.seed, i) < (isResidential ? 0.55 : 0.75);
             if (!isLit) continue;
 
+            // STABLE window positions - same seed always produces same position
             const wx = tileCenterX + (pseudoRandom(light.seed, i + 10) - 0.5) * 22;
             const wy = tileCenterY + buildingHeight + (pseudoRandom(light.seed, i + 20) - 0.5) * 16;
 
@@ -3506,8 +3532,8 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
             ctx.fill();
           }
         }
-        
-        // Ground glow (on mobile, use a simpler/stronger single gradient)
+
+        // Ground glow - always visible even when zoomed out
         const groundGlowRadius = isMobile ? TILE_WIDTH * 0.5 : TILE_WIDTH * 0.6;
         const groundGlowAlpha = isMobile ? 0.4 : 0.28;
         const groundGlow = ctx.createRadialGradient(
@@ -3522,21 +3548,22 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
         ctx.fill();
       }
     }
-    
+
     ctx.restore();
-    
-    // Draw colored glows (source-over)
+
+    // Draw colored glows for special buildings and road lights
     ctx.globalCompositeOperation = 'source-over';
     ctx.save();
     ctx.scale(dpr * zoom, dpr * zoom);
     ctx.translate(offset.x / zoom, offset.y / zoom);
-    
-    for (const glow of coloredGlows) {
-      const { screenX, screenY } = gridToScreen(glow.x, glow.y);
-      const tileCenterX = screenX + TILE_WIDTH / 2;
-      const tileCenterY = screenY + TILE_HEIGHT / 2;
-      
-      if (glow.type === 'road') {
+
+    // Road colored glows (warm street light color)
+    if (!isMobile && zoom >= 0.6) {
+      for (const light of visibleLights) {
+        if (light.type !== 'road') continue;
+        const tileCenterX = light.screenX + TILE_WIDTH / 2;
+        const tileCenterY = light.screenY + TILE_HEIGHT / 2;
+
         const gradient = ctx.createRadialGradient(tileCenterX, tileCenterY, 0, tileCenterX, tileCenterY, 20);
         gradient.addColorStop(0, `rgba(255, 210, 130, ${0.3 * lightIntensity})`);
         gradient.addColorStop(0.5, `rgba(255, 190, 100, ${0.15 * lightIntensity})`);
@@ -3545,44 +3572,50 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
         ctx.beginPath();
         ctx.arc(tileCenterX, tileCenterY, 20, 0, Math.PI * 2);
         ctx.fill();
-      } else {
-        let glowColor: { r: number; g: number; b: number } | null = null;
-        let glowRadius = 20;
-        
-        if (glow.type === 'hospital') {
-          glowColor = { r: 255, g: 80, b: 80 };
-          glowRadius = 25;
-        } else if (glow.type === 'fire_station') {
-          glowColor = { r: 255, g: 100, b: 50 };
-          glowRadius = 22;
-        } else if (glow.type === 'police_station') {
-          glowColor = { r: 60, g: 140, b: 255 };
-          glowRadius = 22;
-        } else if (glow.type === 'power_plant') {
-          glowColor = { r: 255, g: 200, b: 50 };
-          glowRadius = 30;
-        }
-        
-        if (glowColor) {
-          const gradient = ctx.createRadialGradient(
-            tileCenterX, tileCenterY - 15, 0,
-            tileCenterX, tileCenterY - 15, glowRadius
-          );
-          gradient.addColorStop(0, `rgba(${glowColor.r}, ${glowColor.g}, ${glowColor.b}, ${0.55 * lightIntensity})`);
-          gradient.addColorStop(0.5, `rgba(${glowColor.r}, ${glowColor.g}, ${glowColor.b}, ${0.25 * lightIntensity})`);
-          gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
-          ctx.fillStyle = gradient;
-          ctx.beginPath();
-          ctx.arc(tileCenterX, tileCenterY - 15, glowRadius, 0, Math.PI * 2);
-          ctx.fill();
-        }
       }
     }
-    
+
+    // Special building glows (hospital, fire station, etc.)
+    for (const light of visibleSpecialGlows) {
+      const tileCenterX = light.screenX + TILE_WIDTH / 2;
+      const tileCenterY = light.screenY + TILE_HEIGHT / 2;
+
+      let glowColor: { r: number; g: number; b: number } | null = null;
+      let glowRadius = 20;
+
+      if (light.specialType === 'hospital') {
+        glowColor = { r: 255, g: 80, b: 80 };
+        glowRadius = 25;
+      } else if (light.specialType === 'fire_station') {
+        glowColor = { r: 255, g: 100, b: 50 };
+        glowRadius = 22;
+      } else if (light.specialType === 'police_station') {
+        glowColor = { r: 60, g: 140, b: 255 };
+        glowRadius = 22;
+      } else if (light.specialType === 'power_plant') {
+        glowColor = { r: 255, g: 200, b: 50 };
+        glowRadius = 30;
+      }
+
+      if (glowColor) {
+        const gradient = ctx.createRadialGradient(
+          tileCenterX, tileCenterY - 15, 0,
+          tileCenterX, tileCenterY - 15, glowRadius
+        );
+        gradient.addColorStop(0, `rgba(${glowColor.r}, ${glowColor.g}, ${glowColor.b}, ${0.55 * lightIntensity})`);
+        gradient.addColorStop(0.5, `rgba(${glowColor.r}, ${glowColor.g}, ${glowColor.b}, ${0.25 * lightIntensity})`);
+        gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.arc(tileCenterX, tileCenterY - 15, glowRadius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
     ctx.restore();
     ctx.globalCompositeOperation = 'source-over';
-    
-  }, [grid, gridSize, visualHour, offset, zoom, canvasSize.width, canvasSize.height, isMobile, isPanning]);
+
+  }, [visualHour, offset, zoom, canvasSize.width, canvasSize.height, isMobile, isPanning]);
   
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button === 1 || (e.button === 0 && e.altKey)) {
