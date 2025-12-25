@@ -2,7 +2,7 @@ import React, { useCallback, useRef } from 'react';
 import { Car, CarDirection, EmergencyVehicle, EmergencyVehicleType, Pedestrian, PedestrianDestType, WorldRenderState, TILE_WIDTH, TILE_HEIGHT } from './types';
 import { CAR_COLORS, CAR_MIN_ZOOM, CAR_MIN_ZOOM_MOBILE, PEDESTRIAN_MIN_ZOOM, PEDESTRIAN_MIN_ZOOM_MOBILE, DIRECTION_META, PEDESTRIAN_MAX_COUNT, PEDESTRIAN_ROAD_TILE_DENSITY, PEDESTRIAN_SPAWN_BATCH_SIZE, PEDESTRIAN_SPAWN_INTERVAL } from './constants';
 import { isRoadTile, getDirectionOptions, pickNextDirection, findPathOnRoads, getDirectionToTile, gridToScreen } from './utils';
-import { findResidentialBuildings, findPedestrianDestinations, findStations, findFires, findRecreationAreas, findEnterableBuildings, SPORTS_TYPES, ACTIVE_RECREATION_TYPES } from './gridFinders';
+import { findResidentialBuildings, findPedestrianDestinations, findFires, findRecreationAreas, findEnterableBuildings, SPORTS_TYPES, ACTIVE_RECREATION_TYPES } from './gridFinders';
 import { drawPedestrians as drawPedestriansUtil } from './drawPedestrians';
 import { BuildingType, Tile } from '@/types/game';
 import { getTrafficLightState, canProceedThroughIntersection, TRAFFIC_LIGHT_TIMING } from './trafficSystem';
@@ -17,6 +17,52 @@ import {
   getRandomBeachTile,
   spawnPedestrianAtBeach,
 } from './pedestrianSystem';
+import { GridSpatialHash } from './SpatialHash';
+
+// PERF: Spatial hash cache for station lookups
+// Uses version counter to invalidate when grid changes
+interface StationEntry {
+  gridX: number;
+  gridY: number;
+  type: 'fire_station' | 'police_station';
+}
+
+let stationSpatialHash: GridSpatialHash<StationEntry> | null = null;
+let stationHashGridVersion = -1;
+
+/**
+ * PERF: Get or rebuild the station spatial hash
+ * Returns the cached hash if grid version hasn't changed
+ */
+function getStationSpatialHash(
+  grid: Tile[][],
+  gridSize: number,
+  gridVersion: number
+): GridSpatialHash<StationEntry> {
+  if (stationSpatialHash && stationHashGridVersion === gridVersion) {
+    return stationSpatialHash;
+  }
+
+  // Rebuild the spatial hash
+  stationSpatialHash = new GridSpatialHash<StationEntry>(8); // Cell size of 8 tiles
+  stationHashGridVersion = gridVersion;
+
+  for (let y = 0; y < gridSize; y++) {
+    for (let x = 0; x < gridSize; x++) {
+      const tile = grid[y][x];
+      const buildingType = tile.building.type;
+      if (buildingType === 'fire_station' || buildingType === 'police_station') {
+        stationSpatialHash.insert({
+          gridX: x,
+          gridY: y,
+          type: buildingType,
+        });
+      }
+    }
+  }
+
+  return stationSpatialHash;
+}
 
 /** Train type for crossing detection (minimal interface) */
 export interface TrainForCrossing {
@@ -310,10 +356,7 @@ export function useVehicleSystems(
     return false;
   }, [worldStateRef, findResidentialBuildingsCallback, findPedestrianDestinationsCallback, findRecreationAreasCallback, findEnterableBuildingsCallback, findBeachTilesCallback, pedestriansRef, pedestrianIdRef]);
 
-  const findStationsCallback = useCallback((type: 'fire_station' | 'police_station'): { x: number; y: number }[] => {
-    const { grid: currentGrid, gridSize: currentGridSize } = worldStateRef.current;
-    return findStations(currentGrid, currentGridSize, type);
-  }, [worldStateRef]);
+  // PERF: findStationsCallback removed - now using spatial hash in updateEmergencyDispatch
 
   const findFiresCallback = useCallback((): { x: number; y: number }[] => {
     const { grid: currentGrid, gridSize: currentGridSize } = worldStateRef.current;
@@ -466,62 +509,70 @@ export function useVehicleSystems(
   const updateEmergencyDispatch = useCallback(() => {
     const { grid: currentGrid, gridSize: currentGridSize, speed: currentSpeed } = worldStateRef.current;
     if (!currentGrid || currentGridSize <= 0 || currentSpeed === 0) return;
-    
+
+    // PERF: Use spatial hash for O(1) nearest station lookup instead of O(n) linear scan
+    const gridVersion = gridVersionRef.current;
+    const stationHash = getStationSpatialHash(currentGrid, currentGridSize, gridVersion);
+
     const fires = findFiresCallback();
-    const fireStations = findStationsCallback('fire_station');
-    
+
     for (const fire of fires) {
       const fireKey = `${fire.x},${fire.y}`;
       if (activeFiresRef.current.has(fireKey)) continue;
-      
-      let nearestStation: { x: number; y: number } | null = null;
-      let nearestDist = Infinity;
-      
-      for (const station of fireStations) {
-        const dist = Math.abs(station.x - fire.x) + Math.abs(station.y - fire.y);
-        if (dist < nearestDist) {
-          nearestDist = dist;
-          nearestStation = station;
-        }
-      }
-      
+
+      // PERF: Use spatial hash queryNearest instead of linear search through all stations
+      const nearestStation = stationHash.queryNearest(
+        fire.x,
+        fire.y,
+        currentGridSize, // max search radius
+        (station) => station.type === 'fire_station'
+      );
+
       if (nearestStation) {
-        if (dispatchEmergencyVehicle('fire_truck', nearestStation.x, nearestStation.y, fire.x, fire.y)) {
+        if (dispatchEmergencyVehicle('fire_truck', nearestStation.gridX, nearestStation.gridY, fire.x, fire.y)) {
           activeFiresRef.current.add(fireKey);
         }
       }
     }
 
     const crimes = findCrimeIncidents();
-    const policeStations = findStationsCallback('police_station');
-    
+
+    // Count police stations for dispatch limit
+    let policeStationCount = 0;
+    // PERF: Count efficiently by querying all stations and filtering
+    const allStationsNearCenter = stationHash.queryGridRadius(
+      Math.floor(currentGridSize / 2),
+      Math.floor(currentGridSize / 2),
+      currentGridSize
+    );
+    for (const station of allStationsNearCenter) {
+      if (station.type === 'police_station') policeStationCount++;
+    }
+
     let dispatched = 0;
-    const maxDispatchPerCheck = Math.max(3, Math.min(6, policeStations.length * 2));
+    const maxDispatchPerCheck = Math.max(3, Math.min(6, policeStationCount * 2));
     for (const crime of crimes) {
       if (dispatched >= maxDispatchPerCheck) break;
-      
+
       const crimeKey = `${crime.x},${crime.y}`;
       if (activeCrimesRef.current.has(crimeKey)) continue;
-      
-      let nearestStation: { x: number; y: number } | null = null;
-      let nearestDist = Infinity;
-      
-      for (const station of policeStations) {
-        const dist = Math.abs(station.x - crime.x) + Math.abs(station.y - crime.y);
-        if (dist < nearestDist) {
-          nearestDist = dist;
-          nearestStation = station;
-        }
-      }
-      
+
+      // PERF: Use spatial hash queryNearest instead of linear search through all stations
+      const nearestStation = stationHash.queryNearest(
+        crime.x,
+        crime.y,
+        currentGridSize, // max search radius
+        (station) => station.type === 'police_station'
+      );
+
       if (nearestStation) {
-        if (dispatchEmergencyVehicle('police_car', nearestStation.x, nearestStation.y, crime.x, crime.y)) {
+        if (dispatchEmergencyVehicle('police_car', nearestStation.gridX, nearestStation.gridY, crime.x, crime.y)) {
           activeCrimesRef.current.add(crimeKey);
           dispatched++;
         }
       }
     }
-  }, [worldStateRef, findFiresCallback, findCrimeIncidents, findStationsCallback, dispatchEmergencyVehicle, activeFiresRef, activeCrimesRef]);
+  }, [worldStateRef, gridVersionRef, findFiresCallback, findCrimeIncidents, dispatchEmergencyVehicle, activeFiresRef, activeCrimesRef]);
 
   const updateEmergencyVehicles = useCallback((delta: number) => {
     const { grid: currentGrid, gridSize: currentGridSize, speed: currentSpeed } = worldStateRef.current;

@@ -860,29 +860,36 @@ const SERVICE_BUILDING_TYPES = new Set([
 ]);
 
 // PERF: Cache for service building positions to avoid O(n²) scan every tick
-// The cache is invalidated when buildings are placed/removed (gameVersion changes)
+// Uses a version counter that increments when service buildings are placed/demolished
 type ServiceBuildingInfo = { x: number; y: number; type: BuildingType };
 let cachedServiceBuildings: ServiceBuildingInfo[] | null = null;
-let cachedServiceBuildingsGridRef: Tile[][] | null = null;
+let serviceBuildingCacheVersion = 0;
+let lastCachedVersion = -1;
 
 // Call this to invalidate the service building cache when buildings change
+// This should be called when:
+// - Service buildings are placed (placeBuilding)
+// - Service buildings are demolished (bulldozeTile)
+// - Game is reloaded (newGame, loadState)
 export function invalidateServiceBuildingCache(): void {
+  serviceBuildingCacheVersion++;
   cachedServiceBuildings = null;
-  cachedServiceBuildingsGridRef = null;
 }
 
 // Calculate service coverage from service buildings - optimized version
 function calculateServiceCoverage(grid: Tile[][], size: number): ServiceCoverage {
   const services = createServiceCoverage(size);
 
-  // PERF: Use cached service buildings if grid reference hasn't changed
-  // This avoids the O(n²) first pass when grid hasn't been modified
+  // PERF: Use cached service buildings if version hasn't changed
+  // This avoids the O(n²) first pass when no service buildings have been placed/demolished
   let serviceBuildings: ServiceBuildingInfo[];
 
-  if (cachedServiceBuildings !== null && cachedServiceBuildingsGridRef === grid) {
+  if (cachedServiceBuildings !== null && lastCachedVersion === serviceBuildingCacheVersion) {
     serviceBuildings = cachedServiceBuildings;
   } else {
-    // First pass: collect all service building positions
+    // First pass: collect all service building positions (including under construction)
+    // We filter for construction/abandoned status in the second pass so cache remains valid
+    // even when buildings complete construction or become abandoned
     serviceBuildings = [];
 
     for (let y = 0; y < size; y++) {
@@ -893,31 +900,33 @@ function calculateServiceCoverage(grid: Tile[][], size: number): ServiceCoverage
         // Quick check if this is a service building
         if (!SERVICE_BUILDING_TYPES.has(buildingType)) continue;
 
-        // Skip buildings under construction
-        if (tile.building.constructionProgress !== undefined && tile.building.constructionProgress < 100) {
-          continue;
-        }
-
-        // Skip abandoned buildings
-        if (tile.building.abandoned) {
-          continue;
-        }
-
         serviceBuildings.push({ x, y, type: buildingType });
       }
     }
 
-    // Cache the service buildings for next tick
+    // Cache the service building positions for next tick
     cachedServiceBuildings = serviceBuildings;
-    cachedServiceBuildingsGridRef = grid;
+    lastCachedVersion = serviceBuildingCacheVersion;
   }
 
   // Second pass: apply coverage for each service building
   for (const building of serviceBuildings) {
     const { x, y, type } = building;
+    const tile = grid[y][x];
+
+    // Skip buildings under construction (checked here so cache stays valid across construction)
+    if (tile.building.constructionProgress !== undefined && tile.building.constructionProgress < 100) {
+      continue;
+    }
+
+    // Skip abandoned buildings
+    if (tile.building.abandoned) {
+      continue;
+    }
+
     const config = SERVICE_CONFIG[type as keyof typeof SERVICE_CONFIG];
     if (!config) continue;
-    
+
     const range = config.range;
     const rangeSquared = config.rangeSquared;
     
@@ -2456,6 +2465,11 @@ export function placeBuilding(
     }
   }
 
+  // PERF: Invalidate service building cache if we placed a service building
+  if (buildingType && SERVICE_BUILDING_TYPES.has(buildingType)) {
+    invalidateServiceBuildingCache();
+  }
+
   return { ...state, grid: newGrid };
 }
 
@@ -2560,6 +2574,12 @@ export function bulldozeTile(state: GameState, x: number, y: number): GameState 
     newGrid[y][x].zone = 'none';
     newGrid[y][x].hasRailOverlay = false; // Clear rail overlay
     // Don't remove subway when bulldozing surface buildings
+  }
+
+  // PERF: Invalidate service building cache if we demolished a service building
+  const demolishedType = origin ? origin.buildingType : tile.building.type;
+  if (SERVICE_BUILDING_TYPES.has(demolishedType)) {
+    invalidateServiceBuildingCache();
   }
 
   return { ...state, grid: newGrid };
