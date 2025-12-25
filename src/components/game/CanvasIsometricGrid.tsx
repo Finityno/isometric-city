@@ -155,6 +155,8 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
   const [isPanning, setIsPanning] = useState(false);
   const isPanningRef = useRef(false); // Ref for animation loop to check panning state
   const isPinchZoomingRef = useRef(false); // Ref for animation loop to check pinch zoom state
+  const isWheelScrollingRef = useRef(false); // Ref to track wheel/trackpad scrolling
+  const wheelScrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const zoomRef = useRef(isMobile ? 0.6 : 1); // Ref for animation loop to check zoom level
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const panCandidateRef = useRef<{ startX: number; startY: number; gridX: number; gridY: number } | null>(null);
@@ -3093,7 +3095,9 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     const dpr = window.devicePixelRatio || 1;
     const currentOffset = offset;
     const currentZoom = zoom;
-    const currentHover = hoveredTileRef.current;
+
+    // Don't show hover highlight while panning or scrolling - check refs for immediate state
+    const currentHover = (isPanningRef.current || isWheelScrollingRef.current) ? null : hoveredTileRef.current;
 
     // Clear the hover canvas
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -3125,7 +3129,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
       ctx.stroke();
     };
 
-    // Draw hovered tile highlight (from ref, not state)
+    // Draw hovered tile highlight (from ref, not state) - only when not panning
     if (currentHover && currentHover.x >= 0 && currentHover.x < gridSize && currentHover.y >= 0 && currentHover.y < gridSize) {
       const { screenX, screenY } = gridToScreen(currentHover.x, currentHover.y, 0, 0);
       drawHighlight(screenX, screenY);
@@ -3622,10 +3626,14 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
       setIsPanning(true);
       setDragStart({ x: e.clientX - offset.x, y: e.clientY - offset.y });
       panCandidateRef.current = null;
+      // Clear hover when panning starts
+      hoveredTileRef.current = null;
+      setHoveredTile(null);
+      setHoveredIncident(null);
       e.preventDefault();
       return;
     }
-    
+
     if (e.button === 0) {
       const rect = containerRef.current?.getBoundingClientRect();
       if (rect) {
@@ -3638,6 +3646,10 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
           setIsPanning(true);
           setDragStart({ x: e.clientX - offset.x, y: e.clientY - offset.y });
           panCandidateRef.current = null;
+          // Clear hover when panning starts
+          hoveredTileRef.current = null;
+          setHoveredTile(null);
+          setHoveredIncident(null);
           return;
         }
 
@@ -3748,6 +3760,10 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
         setIsPanning(true);
         setDragStart({ x: startX - offset.x, y: startY - offset.y });
         panCandidateRef.current = null;
+        // Clear hover when panning starts
+        hoveredTileRef.current = null;
+        setHoveredTile(null);
+        setHoveredIncident(null);
         const newOffset = {
           x: e.clientX - (startX - offset.x),
           y: e.clientY - (startY - offset.y),
@@ -3757,6 +3773,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
       }
     }
 
+    // While panning, don't track hover at all
     if (isPanning) {
       const newOffset = {
         x: e.clientX - dragStart.x,
@@ -3930,6 +3947,18 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     e.preventDefault();
     e.stopPropagation();
 
+    // Clear hover when scrolling/zooming with wheel/trackpad
+    isWheelScrollingRef.current = true;
+    hoveredTileRef.current = null;
+
+    // Reset the wheel scrolling flag after a short delay of no wheel events
+    if (wheelScrollTimeoutRef.current) {
+      clearTimeout(wheelScrollTimeoutRef.current);
+    }
+    wheelScrollTimeoutRef.current = setTimeout(() => {
+      isWheelScrollingRef.current = false;
+    }, 150);
+
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
 
@@ -4010,6 +4039,11 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
   }, []);
 
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    // Clear hover on any touch interaction
+    hoveredTileRef.current = null;
+    setHoveredTile(null);
+    setHoveredIncident(null);
+
     if (e.touches.length === 1) {
       // Single touch - could be pan or tap
       const touch = e.touches[0];
