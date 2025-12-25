@@ -17,6 +17,54 @@ const BFS_PARENT_IDX = new Int16Array(MAX_PATH_LENGTH); // Parent index for O(1)
 let bfsVisitedVersion = 0;
 const BFS_VISITED_VERSION = new Uint8Array(MAX_GRID_SIZE * MAX_GRID_SIZE);
 
+// PERF: LRU cache for pathfinding results
+// Caches computed paths to avoid repeated BFS for same start/target pairs
+const PATH_CACHE_MAX_SIZE = 50;
+type PathCacheEntry = {
+  path: { x: number; y: number }[] | null;
+  lastUsed: number;
+};
+const pathCache = new Map<string, PathCacheEntry>();
+let pathCacheVersion = 0; // Incremented when grid changes (roads added/removed)
+let currentGridVersion = -1;
+
+// Call this when roads are added/removed to invalidate path cache
+export function invalidatePathCache(): void {
+  pathCache.clear();
+  pathCacheVersion++;
+}
+
+// Update grid version for cache invalidation detection
+export function setPathCacheGridVersion(version: number): void {
+  if (version !== currentGridVersion) {
+    currentGridVersion = version;
+    pathCache.clear();
+    pathCacheVersion++;
+  }
+}
+
+function getPathCacheKey(startX: number, startY: number, targetX: number, targetY: number): string {
+  return `${startX},${startY}-${targetX},${targetY}`;
+}
+
+function evictOldestCacheEntry(): void {
+  if (pathCache.size === 0) return;
+
+  let oldestKey: string | null = null;
+  let oldestTime = Infinity;
+
+  for (const [key, entry] of pathCache) {
+    if (entry.lastUsed < oldestTime) {
+      oldestTime = entry.lastUsed;
+      oldestKey = key;
+    }
+  }
+
+  if (oldestKey) {
+    pathCache.delete(oldestKey);
+  }
+}
+
 // Get opposite direction
 export function getOppositeDirection(direction: CarDirection): CarDirection {
   return OPPOSITE_DIRECTION[direction];
@@ -172,6 +220,7 @@ function findNearestRoadLegacy(
 
 // BFS pathfinding on road network - finds path from start to a tile adjacent to target
 // PERF: Uses pre-allocated typed arrays with O(1) path reconstruction via parent indices
+// PERF: LRU cache for repeated path requests between same start/target pairs
 export function findPathOnRoads(
   gridData: Tile[][],
   gridSizeValue: number,
@@ -193,7 +242,16 @@ export function findPathOnRoads(
     return [{ x: startRoad.x, y: startRoad.y }];
   }
 
-  // For larger grids, use legacy fallback
+  // PERF: Check cache first - use actual road positions as key
+  const cacheKey = getPathCacheKey(startRoad.x, startRoad.y, targetRoad.x, targetRoad.y);
+  const cached = pathCache.get(cacheKey);
+  if (cached) {
+    cached.lastUsed = Date.now();
+    // Return a copy to prevent mutation
+    return cached.path ? cached.path.map(p => ({ x: p.x, y: p.y })) : null;
+  }
+
+  // For larger grids, use legacy fallback (don't cache these)
   if (gridSizeValue > MAX_GRID_SIZE) {
     return findPathOnRoadsLegacy(gridData, gridSizeValue, startRoad, targetRoad);
   }
@@ -246,7 +304,14 @@ export function findPathOnRoads(
     }
   }
 
-  if (foundIdx === -1) return null;
+  if (foundIdx === -1) {
+    // Cache null result to avoid repeated failed searches
+    if (pathCache.size >= PATH_CACHE_MAX_SIZE) {
+      evictOldestCacheEntry();
+    }
+    pathCache.set(cacheKey, { path: null, lastUsed: Date.now() });
+    return null;
+  }
 
   // Reconstruct path by walking back through parent indices - O(path_length)
   const pathReverse: { x: number; y: number }[] = [];
@@ -258,7 +323,15 @@ export function findPathOnRoads(
   }
 
   // Reverse to get path from start to target
-  return pathReverse.reverse();
+  const path = pathReverse.reverse();
+
+  // PERF: Cache the result for future use
+  if (pathCache.size >= PATH_CACHE_MAX_SIZE) {
+    evictOldestCacheEntry();
+  }
+  pathCache.set(cacheKey, { path: path.map(p => ({ x: p.x, y: p.y })), lastUsed: Date.now() });
+
+  return path;
 }
 
 // Legacy implementation for very large grids (fallback)
