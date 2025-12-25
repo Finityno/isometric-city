@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import {
@@ -26,10 +26,13 @@ export interface OverlayModeToggleProps {
 }
 
 // ============================================================================
-// Icon Mapping
+// Static Constants (computed once at module load)
 // ============================================================================
 
-/** Map overlay modes to their icons */
+/** Pre-computed overlay modes array to avoid Object.keys on every render */
+const OVERLAY_MODES = Object.keys(OVERLAY_CONFIG) as OverlayMode[];
+
+/** Map overlay modes to their icons - stable references */
 const OVERLAY_ICONS: Record<OverlayMode, React.ReactNode> = {
   none: <CloseIcon size={14} />,
   power: <PowerIcon size={14} />,
@@ -41,14 +44,66 @@ const OVERLAY_ICONS: Record<OverlayMode, React.ReactNode> = {
   subway: <SubwayIcon size={14} />,
 };
 
+/** Static label element - extracted to avoid recreation */
+const LABEL_ELEMENT = (
+  <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground font-semibold mb-2">
+    View Overlay
+  </div>
+);
+
 // ============================================================================
-// Component
+// Memoized Button Component
+// ============================================================================
+
+interface OverlayButtonProps {
+  mode: OverlayMode;
+  isActive: boolean;
+  onClick: (mode: OverlayMode) => void;
+}
+
+/** Individual overlay button - memoized to prevent re-renders when other buttons change */
+const OverlayButton = React.memo(function OverlayButton({
+  mode,
+  isActive,
+  onClick,
+}: OverlayButtonProps) {
+  const config = OVERLAY_CONFIG[mode];
+
+  const handleClick = useCallback(() => {
+    onClick(mode);
+  }, [onClick, mode]);
+
+  const className = useMemo(
+    () => `h-8 px-3 ${getOverlayButtonClass(mode, isActive)}`,
+    [mode, isActive]
+  );
+
+  return (
+    <Button
+      variant={isActive ? 'default' : 'ghost'}
+      size="sm"
+      onClick={handleClick}
+      className={className}
+      title={config.title}
+    >
+      {OVERLAY_ICONS[mode]}
+    </Button>
+  );
+});
+
+// ============================================================================
+// Main Component
 // ============================================================================
 
 /**
  * Overlay mode toggle component.
  * Allows users to switch between different visualization overlays
  * (power grid, water system, service coverage, etc.)
+ *
+ * Performance optimizations:
+ * - Static constants extracted outside component
+ * - Individual buttons memoized to prevent cascade re-renders
+ * - Click handlers properly memoized
  */
 export const OverlayModeToggle = React.memo(function OverlayModeToggle({
   overlayMode,
@@ -56,27 +111,16 @@ export const OverlayModeToggle = React.memo(function OverlayModeToggle({
 }: OverlayModeToggleProps) {
   return (
     <Card className="absolute bottom-4 left-4 p-2 shadow-lg bg-card/90 border-border/70 z-50">
-      <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground font-semibold mb-2">
-        View Overlay
-      </div>
+      {LABEL_ELEMENT}
       <div className="flex gap-1">
-        {(Object.keys(OVERLAY_CONFIG) as OverlayMode[]).map((mode) => {
-          const config = OVERLAY_CONFIG[mode];
-          const isActive = overlayMode === mode;
-          
-          return (
-            <Button
-              key={mode}
-              variant={isActive ? 'default' : 'ghost'}
-              size="sm"
-              onClick={() => setOverlayMode(mode)}
-              className={`h-8 px-3 ${getOverlayButtonClass(mode, isActive)}`}
-              title={config.title}
-            >
-              {OVERLAY_ICONS[mode]}
-            </Button>
-          );
-        })}
+        {OVERLAY_MODES.map((mode) => (
+          <OverlayButton
+            key={mode}
+            mode={mode}
+            isActive={overlayMode === mode}
+            onClick={setOverlayMode}
+          />
+        ))}
       </div>
     </Card>
   );

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react';
 import Image from 'next/image';
 import { useSearchParams, useRouter } from 'next/navigation';
 import {
@@ -34,32 +34,299 @@ import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { SpriteTestPanel } from './SpriteTestPanel';
 import { SavedCityMeta } from '@/types/game';
+import { SpritePack } from '@/lib/renderConfig';
 
-// Format a date for display
-function formatDate(timestamp: number): string {
-  const date = new Date(timestamp);
-  return date.toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
-}
+// Date formatting options - defined once outside component
+const DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+};
+
+// Format a date for display - memoized via useMemo in component
+const formatDate = (timestamp: number): string => {
+  return new Date(timestamp).toLocaleDateString(undefined, DATE_FORMAT_OPTIONS);
+};
 
 // Format population for display
-function formatPopulation(pop: number): string {
+const formatPopulation = (pop: number): string => {
   if (pop >= 1000000) return `${(pop / 1000000).toFixed(1)}M`;
   if (pop >= 1000) return `${(pop / 1000).toFixed(1)}K`;
   return pop.toString();
-}
+};
 
 // Format money for display
-function formatMoney(money: number): string {
+const formatMoney = (money: number): string => {
   if (money >= 1000000) return `$${(money / 1000000).toFixed(1)}M`;
   if (money >= 1000) return `$${(money / 1000).toFixed(1)}K`;
   return `$${money}`;
+};
+
+// Day/Night mode options - static array
+const DAY_NIGHT_MODES: DayNightMode[] = ['auto', 'day', 'night'];
+
+// Example state imports - lazy loaded
+const EXAMPLE_STATES = [
+  { name: 'Example State', path: '@/resources/example_state.json' },
+  { name: 'Example State 2', path: '@/resources/example_state_2.json' },
+  { name: 'Example State 3', path: '@/resources/example_state_3.json' },
+  { name: 'Example State 4', path: '@/resources/example_state_4.json' },
+  { name: 'Example State 5', path: '@/resources/example_state_5.json' },
+  { name: 'Example State 6', path: '@/resources/example_state_6.json' },
+  { name: 'Example State 7', path: '@/resources/example_state_7.json' },
+  { name: 'Example State 8', path: '@/resources/example_state_8.json' },
+  { name: 'Example State 9', path: '@/resources/example_state_9.json' },
+];
+
+// =============================================================================
+// Memoized Subcomponents
+// =============================================================================
+
+interface SpritePackButtonProps {
+  pack: SpritePack;
+  isSelected: boolean;
+  onSelect: (id: string) => void;
 }
+
+const SpritePackButton = memo(function SpritePackButton({
+  pack,
+  isSelected,
+  onSelect
+}: SpritePackButtonProps) {
+  const handleClick = useCallback(() => onSelect(pack.id), [onSelect, pack.id]);
+
+  return (
+    <button
+      onClick={handleClick}
+      className={`flex items-center gap-3 p-2 rounded-md border transition-colors text-left ${
+        isSelected
+          ? 'border-primary bg-primary/10 text-foreground'
+          : 'border-border hover:border-muted-foreground/50 text-muted-foreground hover:text-foreground'
+      }`}
+    >
+      <div className="w-10 h-10 rounded overflow-hidden bg-muted flex-shrink-0 relative">
+        <Image
+          src={pack.src}
+          alt={pack.name}
+          fill
+          className="object-cover object-top"
+          style={{ imageRendering: 'pixelated' }}
+          unoptimized
+        />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="font-medium text-sm truncate">{pack.name}</div>
+        <div className="text-xs text-muted-foreground truncate">{pack.src}</div>
+      </div>
+      {isSelected && (
+        <div className="w-2 h-2 rounded-full bg-primary flex-shrink-0" />
+      )}
+    </button>
+  );
+});
+
+interface DayNightModeButtonProps {
+  mode: DayNightMode;
+  isSelected: boolean;
+  onSelect: (mode: DayNightMode) => void;
+}
+
+const DayNightModeButton = memo(function DayNightModeButton({
+  mode,
+  isSelected,
+  onSelect,
+}: DayNightModeButtonProps) {
+  const handleClick = useCallback(() => onSelect(mode), [onSelect, mode]);
+  const label = mode === 'auto' ? 'Auto' : mode === 'day' ? 'Day' : 'Night';
+
+  return (
+    <button
+      onClick={handleClick}
+      className={`flex-1 px-3 py-2 text-sm font-medium transition-colors ${
+        isSelected
+          ? 'bg-primary text-primary-foreground'
+          : 'bg-background hover:bg-muted text-muted-foreground hover:text-foreground'
+      }`}
+    >
+      {label}
+    </button>
+  );
+});
+
+interface SavedCityItemProps {
+  city: SavedCityMeta;
+  isCurrentCity: boolean;
+  isRenaming: boolean;
+  isDeleting: boolean;
+  renameValue: string;
+  onRenameValueChange: (value: string) => void;
+  onStartRename: (city: SavedCityMeta) => void;
+  onConfirmRename: () => void;
+  onCancelRename: () => void;
+  onStartDelete: (city: SavedCityMeta) => void;
+  onConfirmDelete: () => void;
+  onCancelDelete: () => void;
+  onLoad: () => void;
+}
+
+const SavedCityItem = memo(function SavedCityItem({
+  city,
+  isCurrentCity,
+  isRenaming,
+  isDeleting,
+  renameValue,
+  onRenameValueChange,
+  onStartRename,
+  onConfirmRename,
+  onCancelRename,
+  onStartDelete,
+  onConfirmDelete,
+  onCancelDelete,
+  onLoad,
+}: SavedCityItemProps) {
+  const handleRenameInputChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => onRenameValueChange(e.target.value),
+    [onRenameValueChange]
+  );
+
+  const handleStartRename = useCallback(() => onStartRename(city), [onStartRename, city]);
+  const handleStartDelete = useCallback(() => onStartDelete(city), [onStartDelete, city]);
+
+  return (
+    <div
+      className={`p-3 rounded-md border transition-colors ${
+        isCurrentCity
+          ? 'border-primary bg-primary/10'
+          : 'border-border hover:border-muted-foreground/50'
+      }`}
+    >
+      {isRenaming ? (
+        <div className="space-y-2">
+          <Input
+            value={renameValue}
+            onChange={handleRenameInputChange}
+            placeholder="New city name..."
+            className="h-8 text-sm"
+            autoFocus
+          />
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex-1 h-7 text-xs"
+              onClick={onCancelRename}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="default"
+              size="sm"
+              className="flex-1 h-7 text-xs"
+              onClick={onConfirmRename}
+            >
+              Save
+            </Button>
+          </div>
+        </div>
+      ) : isDeleting ? (
+        <div className="space-y-2">
+          <p className="text-xs text-muted-foreground text-center">Delete this city?</p>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex-1 h-7 text-xs"
+              onClick={onCancelDelete}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              className="flex-1 h-7 text-xs"
+              onClick={onConfirmDelete}
+            >
+              Delete
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="flex items-start justify-between mb-1">
+            <div className="font-medium text-sm truncate flex-1">
+              {city.cityName}
+              {isCurrentCity && (
+                <span className="ml-2 text-[10px] text-primary">(current)</span>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-3 text-xs text-muted-foreground mb-2">
+            <span>Pop: {formatPopulation(city.population)}</span>
+            <span>{formatMoney(city.money)}</span>
+            <span>{city.gridSize}x{city.gridSize}</span>
+          </div>
+          <div className="text-[10px] text-muted-foreground mb-2">
+            Saved {formatDate(city.savedAt)}
+          </div>
+          <div className="flex gap-2">
+            {!isCurrentCity && (
+              <Button
+                variant="default"
+                size="sm"
+                className="flex-1 h-7 text-xs"
+                onClick={onLoad}
+              >
+                Load
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex-1 h-7 text-xs"
+              onClick={handleStartRename}
+            >
+              Rename
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex-1 h-7 text-xs hover:bg-destructive hover:text-destructive-foreground"
+              onClick={handleStartDelete}
+            >
+              Delete
+            </Button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+});
+
+interface ExampleStateButtonProps {
+  index: number;
+  name: string;
+  onLoad: (index: number) => void;
+}
+
+const ExampleStateButton = memo(function ExampleStateButton({
+  index,
+  name,
+  onLoad,
+}: ExampleStateButtonProps) {
+  const handleClick = useCallback(() => onLoad(index), [onLoad, index]);
+
+  return (
+    <Button
+      variant="outline"
+      className={`w-full ${index > 0 ? 'mt-2' : ''}`}
+      onClick={handleClick}
+    >
+      Load {name}
+    </Button>
+  );
+});
 
 export function SettingsPanel() {
   const cityName = useCityName();

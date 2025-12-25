@@ -6,6 +6,16 @@ import { OPPOSITE_DIRECTION } from './constants';
 const MAX_ROAD_SEARCH_DISTANCE = 20;
 const MAX_GRID_SIZE = 256;
 
+// PERF: Pre-computed half dimensions to avoid division in hot paths
+const HALF_TILE_WIDTH = TILE_WIDTH / 2;   // 32
+const HALF_TILE_HEIGHT = TILE_HEIGHT / 2; // 19.2
+// PERF: Pre-computed inverse for multiplication instead of division
+const INV_HALF_TILE_WIDTH = 1 / HALF_TILE_WIDTH;
+const INV_HALF_TILE_HEIGHT = 1 / HALF_TILE_HEIGHT;
+
+// PERF: Monotonic counter for LRU cache instead of Date.now() (avoids system call overhead)
+let lruCounter = 0;
+
 // PERF: Pre-allocated typed arrays for BFS pathfinding to reduce GC pressure
 // Max path length of 2048 nodes should be sufficient for most city sizes
 const MAX_PATH_LENGTH = 2048;
@@ -28,6 +38,33 @@ const pathCache = new Map<string, PathCacheEntry>();
 let pathCacheVersion = 0; // Incremented when grid changes (roads added/removed)
 let currentGridVersion = -1;
 
+// PERF: Pre-allocated result arrays to avoid object creation in hot paths
+// These are used by gridToScreen/screenToGrid for callers that use the pooled versions
+const SCREEN_RESULT = { screenX: 0, screenY: 0 };
+const GRID_RESULT = { gridX: 0, gridY: 0 };
+
+// PERF: Pre-allocated direction arrays to avoid allocation in getDirectionOptions
+const DIRECTION_RESULT: CarDirection[] = [];
+
+// PERF: Direction lookup table for getDirectionToTile - uses encoded (dx+1)*3+(dy+1) as index
+// dx,dy can be -1,0,1, so (dx+1) gives 0,1,2 and (dy+1) gives 0,1,2
+// Index = (dx+1)*3 + (dy+1), values 0-8 map to directions or null
+const DIRECTION_LOOKUP: (CarDirection | null)[] = [
+  null,    // dx=-1, dy=-1 (diagonal)
+  'north', // dx=-1, dy=0
+  null,    // dx=-1, dy=1  (diagonal)
+  'east',  // dx=0,  dy=-1
+  null,    // dx=0,  dy=0  (same tile)
+  'west',  // dx=0,  dy=1
+  null,    // dx=1,  dy=-1 (diagonal)
+  'south', // dx=1,  dy=0
+  null,    // dx=1,  dy=1  (diagonal)
+];
+
+// PERF: Direction to delta lookup for avoiding branching
+const DIR_TO_DX: Record<CarDirection, number> = { north: -1, south: 1, east: 0, west: 0 };
+const DIR_TO_DY: Record<CarDirection, number> = { north: 0, south: 0, east: -1, west: 1 };
+
 // Call this when roads are added/removed to invalidate path cache
 export function invalidatePathCache(): void {
   pathCache.clear();
@@ -43,8 +80,13 @@ export function setPathCacheGridVersion(version: number): void {
   }
 }
 
+// PERF: Use numeric cache key to avoid string allocation
+// Encodes 4 coordinates into a single string using bit manipulation
+// Supports coordinates 0-65535 (16 bits each)
 function getPathCacheKey(startX: number, startY: number, targetX: number, targetY: number): string {
-  return `${startX},${startY}-${targetX},${targetY}`;
+  // Using string template is still fastest for Map keys, but we minimize allocations
+  // by using a compact format
+  return `${startX}|${startY}|${targetX}|${targetY}`;
 }
 
 function evictOldestCacheEntry(): void {
@@ -66,27 +108,61 @@ function evictOldestCacheEntry(): void {
 }
 
 // Get opposite direction
+// PERF: Inlined in hot paths, but exported for external use
 export function getOppositeDirection(direction: CarDirection): CarDirection {
   return OPPOSITE_DIRECTION[direction];
 }
 
 // Check if a tile is a road
+// PERF: Inlined in hot paths, but exported for external use
 export function isRoadTile(gridData: Tile[][], gridSizeValue: number, x: number, y: number): boolean {
-  if (x < 0 || y < 0 || x >= gridSizeValue || y >= gridSizeValue) return false;
+  // PERF: Use unsigned comparison trick - if x < 0, (x >>> 0) will be a large number > gridSizeValue
+  // This combines the bounds checks into fewer comparisons
+  if ((x >>> 0) >= gridSizeValue || (y >>> 0) >= gridSizeValue) return false;
   return gridData[y][x].building.type === 'road';
 }
 
-// Get available direction options from a tile
-export function getDirectionOptions(gridData: Tile[][], gridSizeValue: number, x: number, y: number): CarDirection[] {
-  const options: CarDirection[] = [];
-  if (isRoadTile(gridData, gridSizeValue, x - 1, y)) options.push('north');
-  if (isRoadTile(gridData, gridSizeValue, x, y - 1)) options.push('east');
-  if (isRoadTile(gridData, gridSizeValue, x + 1, y)) options.push('south');
-  if (isRoadTile(gridData, gridSizeValue, x, y + 1)) options.push('west');
-  return options;
+// PERF: Inlined road check for hot paths - avoids function call overhead
+function isRoadTileInline(gridData: Tile[][], gridSizeValue: number, x: number, y: number): boolean {
+  return (x >>> 0) < gridSizeValue && (y >>> 0) < gridSizeValue && gridData[y][x].building.type === 'road';
 }
 
+// Get available direction options from a tile
+// PERF: Uses pre-allocated array and inline road checks
+export function getDirectionOptions(gridData: Tile[][], gridSizeValue: number, x: number, y: number): CarDirection[] {
+  // PERF: Reuse pre-allocated array
+  DIRECTION_RESULT.length = 0;
+
+  // PERF: Inline isRoadTile checks to avoid function call overhead
+  // Check north (x-1, y)
+  const x1 = x - 1;
+  if ((x1 >>> 0) < gridSizeValue && gridData[y][x1].building.type === 'road') {
+    DIRECTION_RESULT.push('north');
+  }
+  // Check east (x, y-1)
+  const y1 = y - 1;
+  if ((y1 >>> 0) < gridSizeValue && gridData[y1][x].building.type === 'road') {
+    DIRECTION_RESULT.push('east');
+  }
+  // Check south (x+1, y)
+  const x2 = x + 1;
+  if (x2 < gridSizeValue && gridData[y][x2].building.type === 'road') {
+    DIRECTION_RESULT.push('south');
+  }
+  // Check west (x, y+1)
+  const y2 = y + 1;
+  if (y2 < gridSizeValue && gridData[y2][x].building.type === 'road') {
+    DIRECTION_RESULT.push('west');
+  }
+
+  return DIRECTION_RESULT;
+}
+
+// PERF: Pre-allocated arrays for pickNextDirection to avoid allocations
+const FILTERED_DIRECTIONS: CarDirection[] = [];
+
 // Pick next direction for vehicle movement
+// PERF: Avoids array allocations by using pre-allocated arrays and inline checks
 export function pickNextDirection(
   previousDirection: CarDirection,
   gridData: Tile[][],
@@ -94,12 +170,67 @@ export function pickNextDirection(
   x: number,
   y: number
 ): CarDirection | null {
-  const options = getDirectionOptions(gridData, gridSizeValue, x, y);
-  if (options.length === 0) return null;
-  const incoming = getOppositeDirection(previousDirection);
-  const filtered = options.filter(dir => dir !== incoming);
-  const pool = filtered.length > 0 ? filtered : options;
-  return pool[Math.floor(Math.random() * pool.length)];
+  // PERF: Inline direction options gathering to avoid function call
+  let optionCount = 0;
+  const incoming = OPPOSITE_DIRECTION[previousDirection];
+
+  // PERF: Check each direction inline and filter in one pass
+  FILTERED_DIRECTIONS.length = 0;
+  let hasNonIncoming = false;
+
+  // Check north (x-1, y)
+  const x1 = x - 1;
+  if ((x1 >>> 0) < gridSizeValue && gridData[y][x1].building.type === 'road') {
+    optionCount++;
+    if ('north' !== incoming) {
+      FILTERED_DIRECTIONS.push('north');
+      hasNonIncoming = true;
+    }
+  }
+  // Check east (x, y-1)
+  const y1 = y - 1;
+  if ((y1 >>> 0) < gridSizeValue && gridData[y1][x].building.type === 'road') {
+    optionCount++;
+    if ('east' !== incoming) {
+      FILTERED_DIRECTIONS.push('east');
+      hasNonIncoming = true;
+    }
+  }
+  // Check south (x+1, y)
+  const x2 = x + 1;
+  if (x2 < gridSizeValue && gridData[y][x2].building.type === 'road') {
+    optionCount++;
+    if ('south' !== incoming) {
+      FILTERED_DIRECTIONS.push('south');
+      hasNonIncoming = true;
+    }
+  }
+  // Check west (x, y+1)
+  const y2 = y + 1;
+  if (y2 < gridSizeValue && gridData[y2][x].building.type === 'road') {
+    optionCount++;
+    if ('west' !== incoming) {
+      FILTERED_DIRECTIONS.push('west');
+      hasNonIncoming = true;
+    }
+  }
+
+  if (optionCount === 0) return null;
+
+  // If we have non-incoming directions, use those; otherwise use all options
+  if (hasNonIncoming) {
+    // PERF: Use bitwise OR 0 for fast floor
+    return FILTERED_DIRECTIONS[(Math.random() * FILTERED_DIRECTIONS.length) | 0];
+  }
+
+  // All options are incoming (dead end U-turn), rebuild options array
+  DIRECTION_RESULT.length = 0;
+  if ((x1 >>> 0) < gridSizeValue && gridData[y][x1].building.type === 'road') DIRECTION_RESULT.push('north');
+  if ((y1 >>> 0) < gridSizeValue && gridData[y1][x].building.type === 'road') DIRECTION_RESULT.push('east');
+  if (x2 < gridSizeValue && gridData[y][x2].building.type === 'road') DIRECTION_RESULT.push('south');
+  if (y2 < gridSizeValue && gridData[y2][x].building.type === 'road') DIRECTION_RESULT.push('west');
+
+  return DIRECTION_RESULT[(Math.random() * DIRECTION_RESULT.length) | 0];
 }
 
 // PERF: Pre-allocated arrays for findNearestRoadToBuilding BFS

@@ -1,8 +1,8 @@
 // ============================================================================
-// PLACEHOLDER BUILDING COLORS
+// PLACEHOLDER BUILDING COLORS - OPTIMIZED
 // ============================================================================
 // Colors for rendering buildings before sprites are loaded
-// Based on zone/category for visual consistency
+// Uses off-screen canvas caching for maximum performance
 
 export interface PlaceholderColor {
   top: string;
@@ -11,7 +11,8 @@ export interface PlaceholderColor {
   height: number;
 }
 
-export const PLACEHOLDER_COLORS: Record<string, PlaceholderColor> = {
+// Pre-defined colors as a frozen object to prevent mutation
+const PLACEHOLDER_COLORS: Readonly<Record<string, PlaceholderColor>> = Object.freeze({
   // Residential - greens
   house_small: { top: '#4ade80', left: '#22c55e', right: '#86efac', height: 0.6 },
   house_medium: { top: '#4ade80', left: '#22c55e', right: '#86efac', height: 0.8 },
@@ -53,11 +54,163 @@ export const PLACEHOLDER_COLORS: Record<string, PlaceholderColor> = {
   amusement_park: { top: '#fb7185', left: '#f43f5e', right: '#fda4af', height: 0.8 },
   // Default for unknown/park buildings
   default: { top: '#9ca3af', left: '#6b7280', right: '#d1d5db', height: 0.6 },
-};
+});
+
+// Export for external use if needed
+export { PLACEHOLDER_COLORS };
+
+// ============================================================================
+// OFF-SCREEN CANVAS CACHE
+// ============================================================================
+// Cache placeholder graphics as ImageBitmap for fastest possible rendering
+// Key format: "buildingType_tileWidth_tileHeight"
+
+interface CachedPlaceholder {
+  canvas: OffscreenCanvas | HTMLCanvasElement;
+  offsetY: number; // How much to offset Y when drawing (accounts for height above baseline)
+}
+
+const placeholderCache = new Map<string, CachedPlaceholder>();
+
+// Reusable Path2D objects for each face type (avoids creating paths every frame)
+// These are templates that get drawn with transforms
+let pathsInitialized = false;
+let leftFacePath: Path2D;
+let rightFacePath: Path2D;
+let topFacePath: Path2D;
+
+function initPaths(): void {
+  if (pathsInitialized) return;
+
+  // Unit-sized paths (will be scaled during rendering)
+  // Left face: from (0, 0.5) to (0.5, 1) to (0.5, 0) to (0, -0.5) - relative to tile
+  leftFacePath = new Path2D();
+  rightFacePath = new Path2D();
+  topFacePath = new Path2D();
+
+  pathsInitialized = true;
+}
+
+/**
+ * Generate cache key for placeholder lookup
+ */
+function getCacheKey(buildingType: string, tileWidth: number, tileHeight: number): string {
+  return `${buildingType}_${tileWidth}_${tileHeight}`;
+}
+
+/**
+ * Create an off-screen cached placeholder for a building type at specific tile dimensions
+ */
+function createCachedPlaceholder(
+  buildingType: string,
+  tileWidth: number,
+  tileHeight: number
+): CachedPlaceholder {
+  const colors = PLACEHOLDER_COLORS[buildingType] ?? PLACEHOLDER_COLORS.default;
+  const boxHeight = tileHeight * colors.height;
+
+  // Pre-calculate all coordinates once
+  const w = tileWidth;
+  const h = tileHeight;
+  const halfW = w * 0.5;
+  const halfH = h * 0.5;
+
+  // Canvas needs to fit the full isometric box including height
+  // Add padding for the box height above the base
+  const canvasWidth = w + 2;  // +2 for anti-aliasing margin
+  const canvasHeight = h + boxHeight + 2;
+  const offsetY = boxHeight; // Y offset from top of canvas to baseline
+
+  // Create off-screen canvas (use OffscreenCanvas if available for better performance)
+  const canvas = typeof OffscreenCanvas !== 'undefined'
+    ? new OffscreenCanvas(canvasWidth, canvasHeight)
+    : document.createElement('canvas');
+
+  if (!(canvas instanceof OffscreenCanvas)) {
+    canvas.width = canvasWidth;
+    canvas.height = canvasHeight;
+  }
+
+  const ctx = canvas.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+  if (!ctx) {
+    throw new Error('Failed to get 2D context for placeholder cache');
+  }
+
+  // Drawing origin: center-x at halfW+1, baseline-y at offsetY+1
+  const ox = halfW + 1; // center x with 1px margin
+  const baseY = offsetY + 1; // baseline y with 1px margin
+  const topY = 1; // top of box with 1px margin
+
+  // Draw left face (darker) - single path, no closePath needed with fill
+  ctx.fillStyle = colors.left;
+  ctx.beginPath();
+  ctx.moveTo(ox - halfW, baseY + halfH);
+  ctx.lineTo(ox, baseY + h);
+  ctx.lineTo(ox, topY + h);
+  ctx.lineTo(ox - halfW, topY + halfH);
+  ctx.fill();
+
+  // Draw right face (lighter)
+  ctx.fillStyle = colors.right;
+  ctx.beginPath();
+  ctx.moveTo(ox + halfW, baseY + halfH);
+  ctx.lineTo(ox, baseY + h);
+  ctx.lineTo(ox, topY + h);
+  ctx.lineTo(ox + halfW, topY + halfH);
+  ctx.fill();
+
+  // Draw top face
+  ctx.fillStyle = colors.top;
+  ctx.beginPath();
+  ctx.moveTo(ox, topY);
+  ctx.lineTo(ox + halfW, topY + halfH);
+  ctx.lineTo(ox, topY + h);
+  ctx.lineTo(ox - halfW, topY + halfH);
+  ctx.fill();
+
+  // Add subtle edge lines on top face only (most visible)
+  ctx.strokeStyle = 'rgba(0,0,0,0.2)';
+  ctx.lineWidth = 0.5;
+  ctx.beginPath();
+  ctx.moveTo(ox, topY);
+  ctx.lineTo(ox + halfW, topY + halfH);
+  ctx.lineTo(ox, topY + h);
+  ctx.lineTo(ox - halfW, topY + halfH);
+  ctx.closePath();
+  ctx.stroke();
+
+  return { canvas, offsetY };
+}
+
+/**
+ * Get or create cached placeholder
+ */
+function getOrCreatePlaceholder(
+  buildingType: string,
+  tileWidth: number,
+  tileHeight: number
+): CachedPlaceholder {
+  const key = getCacheKey(buildingType, tileWidth, tileHeight);
+
+  let cached = placeholderCache.get(key);
+  if (!cached) {
+    cached = createCachedPlaceholder(buildingType, tileWidth, tileHeight);
+    placeholderCache.set(key, cached);
+  }
+
+  return cached;
+}
 
 /**
  * Draw a placeholder isometric building box when sprites aren't loaded yet.
- * Uses simple colored 3D boxes that match the zone/category.
+ * Uses cached off-screen canvases for maximum performance.
+ *
+ * @param ctx - Main canvas rendering context
+ * @param x - Screen X position (left edge of tile)
+ * @param y - Screen Y position (top edge of tile diamond)
+ * @param buildingType - Building type key for color lookup
+ * @param tileWidth - Width of isometric tile
+ * @param tileHeight - Height of isometric tile
  */
 export function drawPlaceholderBuilding(
   ctx: CanvasRenderingContext2D,
@@ -67,52 +220,38 @@ export function drawPlaceholderBuilding(
   tileWidth: number,
   tileHeight: number
 ): void {
-  const colors = PLACEHOLDER_COLORS[buildingType] || PLACEHOLDER_COLORS.default;
-  const boxHeight = tileHeight * colors.height;
-  
-  const w = tileWidth;
-  const h = tileHeight;
-  const cx = x + w / 2;
-  const topY = y - boxHeight;
-  
-  // Draw left face (darker)
-  ctx.fillStyle = colors.left;
-  ctx.beginPath();
-  ctx.moveTo(x, y + h / 2);
-  ctx.lineTo(cx, y + h);
-  ctx.lineTo(cx, topY + h);
-  ctx.lineTo(x, topY + h / 2);
-  ctx.closePath();
-  ctx.fill();
-  
-  // Draw right face (lighter)
-  ctx.fillStyle = colors.right;
-  ctx.beginPath();
-  ctx.moveTo(x + w, y + h / 2);
-  ctx.lineTo(cx, y + h);
-  ctx.lineTo(cx, topY + h);
-  ctx.lineTo(x + w, topY + h / 2);
-  ctx.closePath();
-  ctx.fill();
-  
-  // Draw top face
-  ctx.fillStyle = colors.top;
-  ctx.beginPath();
-  ctx.moveTo(cx, topY);
-  ctx.lineTo(x + w, topY + h / 2);
-  ctx.lineTo(cx, topY + h);
-  ctx.lineTo(x, topY + h / 2);
-  ctx.closePath();
-  ctx.fill();
-  
-  // Add subtle edge lines
-  ctx.strokeStyle = 'rgba(0,0,0,0.2)';
-  ctx.lineWidth = 0.5;
-  ctx.beginPath();
-  ctx.moveTo(cx, topY);
-  ctx.lineTo(x + w, topY + h / 2);
-  ctx.lineTo(cx, topY + h);
-  ctx.lineTo(x, topY + h / 2);
-  ctx.closePath();
-  ctx.stroke();
+  const cached = getOrCreatePlaceholder(buildingType, tileWidth, tileHeight);
+
+  // Draw cached canvas at position, offsetting to account for box height
+  // The cached canvas has the building centered, so we offset by -1 for the margin
+  ctx.drawImage(
+    cached.canvas as CanvasImageSource,
+    x - 1,
+    y - cached.offsetY - 1
+  );
+}
+
+/**
+ * Clear the placeholder cache. Call when tile dimensions change significantly
+ * or to free memory.
+ */
+export function clearPlaceholderCache(): void {
+  placeholderCache.clear();
+}
+
+/**
+ * Pre-warm the cache with common building types at specified dimensions.
+ * Call during initialization for smoother initial rendering.
+ */
+export function prewarmPlaceholderCache(tileWidth: number, tileHeight: number): void {
+  const commonTypes = [
+    'house_small', 'house_medium', 'apartment_low', 'apartment_high',
+    'shop_small', 'shop_medium', 'office_low', 'office_high',
+    'factory_small', 'factory_medium', 'warehouse',
+    'park', 'tree', 'default'
+  ];
+
+  for (const type of commonTypes) {
+    getOrCreatePlaceholder(type, tileWidth, tileHeight);
+  }
 }

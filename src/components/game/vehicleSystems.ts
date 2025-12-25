@@ -20,6 +20,33 @@ import {
 import { GridSpatialHash } from './SpatialHash';
 import { getCachedCrimeEligibleTiles } from './BuildingCache';
 
+// PERF: Pre-computed speed multipliers to avoid branching in hot paths
+const SPEED_MULTIPLIERS = [0, 1, 2.5, 4] as const;
+const SPEED_MULTIPLIERS_CRIME = [0, 1, 2, 3] as const;
+
+// PERF: Object pool for reusing arrays and avoiding allocations
+const ARRAY_POOL: { x: number; y: number }[][] = [];
+const MAX_POOLED_ARRAYS = 20;
+
+function getPooledArray(): { x: number; y: number }[] {
+  return ARRAY_POOL.pop() || [];
+}
+
+function returnPooledArray(arr: { x: number; y: number }[]): void {
+  if (ARRAY_POOL.length < MAX_POOLED_ARRAYS) {
+    arr.length = 0;
+    ARRAY_POOL.push(arr);
+  }
+}
+
+// PERF: Reusable temp objects to avoid allocations in hot paths
+const _tempCrimeEntry = { x: 0, y: 0, policeCoverage: 0 };
+
+// PERF: Pre-allocated arrays for crime incidents
+const _eligibleTilesBuffer: { x: number; y: number; policeCoverage: number }[] = [];
+const _keysToDeleteBuffer: string[] = [];
+const _weightedTilesBuffer: { x: number; y: number; policeCoverage: number }[] = [];
+
 // PERF: Spatial hash cache for station lookups
 // Uses version counter to invalidate when grid changes
 interface StationEntry {
@@ -368,7 +395,8 @@ export function useVehicleSystems(
     const { grid: currentGrid, gridSize: currentGridSize, speed: currentSpeed } = worldStateRef.current;
     if (!currentGrid || currentGridSize <= 0 || currentSpeed === 0) return;
 
-    const speedMultiplier = currentSpeed === 1 ? 1 : currentSpeed === 2 ? 2 : 3;
+    // PERF: Use lookup table instead of branching
+    const speedMultiplier = SPEED_MULTIPLIERS_CRIME[currentSpeed] || 1;
     crimeSpawnTimerRef.current -= delta * speedMultiplier;
 
     if (crimeSpawnTimerRef.current > 0) return;
@@ -377,45 +405,58 @@ export function useVehicleSystems(
     // PERF: Use cached crime-eligible tiles instead of O(n²) grid scan
     const gridVersion = gridVersionRef.current;
     const cachedTiles = getCachedCrimeEligibleTiles(currentGrid, currentGridSize, gridVersion);
+    const cachedTilesLen = cachedTiles.length;
+    if (cachedTilesLen === 0) return;
 
-    // Add police coverage to the cached tiles
-    const eligibleTiles: { x: number; y: number; policeCoverage: number }[] = [];
-    for (const tile of cachedTiles) {
-      const policeCoverage = state.services.police[tile.y]?.[tile.x] || 0;
-      eligibleTiles.push({ x: tile.x, y: tile.y, policeCoverage });
+    // PERF: Reuse pre-allocated buffer instead of creating new array
+    _eligibleTilesBuffer.length = 0;
+    const policeServices = state.services.police;
+    let totalCoverage = 0;
+
+    for (let i = 0; i < cachedTilesLen; i++) {
+      const tile = cachedTiles[i];
+      const policeCoverage = policeServices[tile.y]?.[tile.x] || 0;
+      totalCoverage += policeCoverage;
+      _eligibleTilesBuffer.push({ x: tile.x, y: tile.y, policeCoverage });
     }
 
-    if (eligibleTiles.length === 0) return;
-    
-    const avgCoverage = eligibleTiles.reduce((sum, t) => sum + t.policeCoverage, 0) / eligibleTiles.length;
+    // PERF: Calculate average inline without reduce
+    const avgCoverage = totalCoverage / cachedTilesLen;
     const baseChance = avgCoverage < 20 ? 0.4 : avgCoverage < 40 ? 0.25 : avgCoverage < 60 ? 0.15 : 0.08;
-    
+
     const population = state.stats.population;
-    const maxActiveCrimes = Math.max(2, Math.floor(population / 500));
-    
+    const maxActiveCrimes = Math.max(2, (population / 500) | 0);
+
     if (activeCrimeIncidentsRef.current.size >= maxActiveCrimes) return;
-    
+
     const crimesToSpawn = Math.random() < 0.3 ? 2 : 1;
-    
+
     for (let i = 0; i < crimesToSpawn; i++) {
       if (activeCrimeIncidentsRef.current.size >= maxActiveCrimes) break;
       if (Math.random() > baseChance) continue;
-      
-      const weightedTiles = eligibleTiles.filter(t => {
+
+      // PERF: Reuse buffer instead of filter creating new array
+      _weightedTilesBuffer.length = 0;
+      const eligibleLen = _eligibleTilesBuffer.length;
+      for (let j = 0; j < eligibleLen; j++) {
+        const t = _eligibleTilesBuffer[j];
         const key = `${t.x},${t.y}`;
-        if (activeCrimeIncidentsRef.current.has(key)) return false;
+        if (activeCrimeIncidentsRef.current.has(key)) continue;
         const weight = Math.max(0.1, 1 - t.policeCoverage / 100);
-        return Math.random() < weight;
-      });
-      
-      if (weightedTiles.length === 0) continue;
-      
-      const target = weightedTiles[Math.floor(Math.random() * weightedTiles.length)];
+        if (Math.random() < weight) {
+          _weightedTilesBuffer.push(t);
+        }
+      }
+
+      const weightedLen = _weightedTilesBuffer.length;
+      if (weightedLen === 0) continue;
+
+      const target = _weightedTilesBuffer[(Math.random() * weightedLen) | 0];
       const key = `${target.x},${target.y}`;
-      
+
       const crimeType = getRandomCrimeType();
       const duration = getCrimeDuration(crimeType);
-      
+
       activeCrimeIncidentsRef.current.set(key, {
         x: target.x,
         y: target.y,

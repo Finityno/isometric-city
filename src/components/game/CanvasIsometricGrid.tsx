@@ -126,6 +126,46 @@ const specialTypes = new Set(['hospital', 'fire_station', 'police_station', 'pow
 const residentialTypes = new Set(['house_small', 'house_medium', 'mansion', 'apartment_low', 'apartment_high']);
 const commercialTypes = new Set(['shop_small', 'shop_medium', 'office_low', 'office_high', 'mall']);
 
+// PERF: Pre-computed isometric math constants (avoids recalculation every frame)
+const HALF_TILE_WIDTH = TILE_WIDTH / 2;
+const HALF_TILE_HEIGHT = TILE_HEIGHT / 2;
+const TILE_HEIGHT_RATIO = TILE_HEIGHT / TILE_WIDTH; // 0.60 ratio
+const INV_TILE_WIDTH = 1 / TILE_WIDTH;
+const INV_TILE_HEIGHT = 1 / TILE_HEIGHT;
+
+// PERF: Pre-computed direction vectors for road drawing (normalized)
+// These are constant for isometric projection - no need to recalculate per-tile
+const ROAD_DIR_NORTH = { dx: -0.7071067811865476, dy: -0.7071067811865476 }; // toward top-left
+const ROAD_DIR_EAST = { dx: 0.7071067811865476, dy: -0.7071067811865476 };  // toward top-right
+const ROAD_DIR_SOUTH = { dx: 0.7071067811865476, dy: 0.7071067811865476 };  // toward bottom-right
+const ROAD_DIR_WEST = { dx: -0.7071067811865476, dy: 0.7071067811865476 };  // toward bottom-left
+const ROAD_PERP_NORTH = { nx: 0.7071067811865476, ny: -0.7071067811865476 };
+const ROAD_PERP_EAST = { nx: 0.7071067811865476, ny: 0.7071067811865476 };
+const ROAD_PERP_SOUTH = { nx: -0.7071067811865476, ny: 0.7071067811865476 };
+const ROAD_PERP_WEST = { nx: -0.7071067811865476, ny: -0.7071067811865476 };
+
+// PERF: Building scale multiplier lookup map (O(1) instead of cascading if statements)
+const BUILDING_SCALE_MULTIPLIERS: Record<string, number> = {
+  airport: 1.0,
+  school: 1.05,
+  university: 0.95,
+  space_program: 1.06,
+  stadium: 0.7,
+  water_tower: 0.9,
+  subway_station: 0.7,
+  police_station: 0.97,
+  fire_station: 0.97,
+  hospital: 0.9,
+  house_small: 1.08,
+  apartment_low: 1.15,
+  apartment_high: 1.38,
+  office_high: 1.20,
+};
+
+// PERF: Dense/modern mall scale adjustments
+const DENSE_MALL_SCALE = 0.85;
+const MODERN_MALL_SCALE = 0.85;
+
 // Lighting cache type - pre-computed light source data for consistent rendering
 type CachedLight = {
   gridX: number;
@@ -3672,7 +3712,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     
     // Clamp and set the new offset - this is a legitimate use case for responding to navigation requests
     const bounds = getMapBounds(zoom, canvasSize.width, canvasSize.height);
-    setOffset({ // eslint-disable-line
+    setOffset({  
       x: Math.max(bounds.minOffsetX, Math.min(bounds.maxOffsetX, newOffset.x)),
       y: Math.max(bounds.minOffsetY, Math.min(bounds.maxOffsetY, newOffset.y)),
     });

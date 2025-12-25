@@ -1,5 +1,5 @@
-import { useCallback } from 'react';
-import { Firework, FactorySmog, WorldRenderState, TILE_WIDTH, TILE_HEIGHT } from './types';
+import { useCallback, useRef } from 'react';
+import { Firework, FactorySmog, WorldRenderState, TILE_WIDTH, TILE_HEIGHT, SmogParticle, FireworkParticle } from './types';
 import { BuildingType } from '@/types/game';
 import {
   FIREWORK_BUILDINGS,
@@ -30,6 +30,134 @@ import {
 } from './constants';
 import { gridToScreen } from './utils';
 import { findFireworkBuildings, findSmogFactories } from './gridFinders';
+
+// ============================================================================
+// OBJECT POOLS - Reduce garbage collection overhead
+// ============================================================================
+
+// Pool for smog particles
+const SMOG_PARTICLE_POOL_SIZE = 500;
+const smogParticlePool: SmogParticle[] = [];
+let smogPoolIndex = 0;
+
+// Initialize smog particle pool
+for (let i = 0; i < SMOG_PARTICLE_POOL_SIZE; i++) {
+  smogParticlePool.push({
+    x: 0, y: 0, vx: 0, vy: 0,
+    age: 0, maxAge: 0, size: 0, opacity: 0
+  });
+}
+
+function acquireSmogParticle(): SmogParticle {
+  // Try to reuse from pool
+  if (smogPoolIndex < smogParticlePool.length) {
+    const particle = smogParticlePool[smogPoolIndex++];
+    return particle;
+  }
+  // Pool exhausted, create new (will be pooled on release)
+  return { x: 0, y: 0, vx: 0, vy: 0, age: 0, maxAge: 0, size: 0, opacity: 0 };
+}
+
+function releaseSmogParticle(particle: SmogParticle): void {
+  // Reset and return to pool
+  if (smogPoolIndex > 0) {
+    smogPoolIndex--;
+    smogParticlePool[smogPoolIndex] = particle;
+  }
+}
+
+// Pool for firework particles
+const FIREWORK_PARTICLE_POOL_SIZE = 300;
+const fireworkParticlePool: FireworkParticle[] = [];
+let fireworkPoolIndex = 0;
+
+// Initialize firework particle pool
+for (let i = 0; i < FIREWORK_PARTICLE_POOL_SIZE; i++) {
+  fireworkParticlePool.push({
+    x: 0, y: 0, vx: 0, vy: 0,
+    age: 0, maxAge: 0, color: '', size: 0, trail: []
+  });
+}
+
+function acquireFireworkParticle(): FireworkParticle {
+  if (fireworkPoolIndex < fireworkParticlePool.length) {
+    const particle = fireworkParticlePool[fireworkPoolIndex++];
+    particle.trail.length = 0; // Reset trail
+    return particle;
+  }
+  return { x: 0, y: 0, vx: 0, vy: 0, age: 0, maxAge: 0, color: '', size: 0, trail: [] };
+}
+
+function releaseFireworkParticle(particle: FireworkParticle): void {
+  if (fireworkPoolIndex > 0) {
+    fireworkPoolIndex--;
+    particle.trail.length = 0;
+    fireworkParticlePool[fireworkPoolIndex] = particle;
+  }
+}
+
+// Pool for trail points
+const TRAIL_POINT_POOL_SIZE = 200;
+const trailPointPool: { x: number; y: number; age: number }[] = [];
+let trailPoolIndex = 0;
+
+for (let i = 0; i < TRAIL_POINT_POOL_SIZE; i++) {
+  trailPointPool.push({ x: 0, y: 0, age: 0 });
+}
+
+function acquireTrailPoint(): { x: number; y: number; age: number } {
+  if (trailPoolIndex < trailPointPool.length) {
+    return trailPointPool[trailPoolIndex++];
+  }
+  return { x: 0, y: 0, age: 0 };
+}
+
+function releaseTrailPoint(point: { x: number; y: number; age: number }): void {
+  if (trailPoolIndex > 0) {
+    trailPoolIndex--;
+    trailPointPool[trailPoolIndex] = point;
+  }
+}
+
+// ============================================================================
+// CACHED CONSTANTS - Pre-computed values
+// ============================================================================
+
+// Pre-computed constants
+const TWO_PI = Math.PI * 2;
+const HALF_TILE_WIDTH = TILE_WIDTH / 2;
+const HALF_TILE_HEIGHT = TILE_HEIGHT / 2;
+const SMOG_SIZE_RANGE = SMOG_PARTICLE_SIZE_MAX - SMOG_PARTICLE_SIZE_MIN;
+const FIREWORK_INTERVAL_RANGE = FIREWORK_SPAWN_INTERVAL_MAX - FIREWORK_SPAWN_INTERVAL_MIN;
+
+// Cached color strings for smog (avoid repeated rgba() string creation)
+const SMOG_COLOR_CACHE: Map<number, string> = new Map();
+const SMOG_INNER_COLOR_CACHE: Map<number, string> = new Map();
+
+function getSmogColor(opacity: number): string {
+  // Quantize opacity to reduce cache size (256 levels)
+  const key = Math.round(opacity * 255);
+  let cached = SMOG_COLOR_CACHE.get(key);
+  if (!cached) {
+    cached = `rgba(100, 100, 110, ${(key / 255).toFixed(3)})`;
+    SMOG_COLOR_CACHE.set(key, cached);
+  }
+  return cached;
+}
+
+function getSmogInnerColor(opacity: number): string {
+  const key = Math.round(opacity * 255);
+  let cached = SMOG_INNER_COLOR_CACHE.get(key);
+  if (!cached) {
+    cached = `rgba(140, 140, 150, ${(key / 255).toFixed(3)})`;
+    SMOG_INNER_COLOR_CACHE.set(key, cached);
+  }
+  return cached;
+}
+
+// Speed multiplier lookup table
+const SPEED_MULTIPLIERS = [0, 1, 2, 4];
+const FIREWORK_SPEED_MULTIPLIERS = [1, 1, 1.5, 2];
 
 export interface EffectsSystemRefs {
   fireworksRef: React.MutableRefObject<Firework[]>;

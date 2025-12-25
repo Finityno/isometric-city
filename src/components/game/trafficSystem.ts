@@ -1,16 +1,118 @@
 /**
  * Traffic System - Sophisticated road network with traffic lights and merged roads
  * Handles avenue/highway detection, traffic light state, and road rendering
+ *
+ * PERFORMANCE OPTIMIZATIONS:
+ * - Road network caching with versioned invalidation
+ * - Memoized merged road analysis
+ * - Spatial hashing for intersection lookups
+ * - Pre-allocated reusable objects to reduce GC pressure
+ * - Optimized loop patterns using for-loops instead of array methods
  */
 
 import { Tile } from '@/types/game';
 import { TILE_WIDTH, TILE_HEIGHT, CarDirection } from './types';
-import { 
-  TRAFFIC_LIGHT_MIN_ZOOM, 
-  DIRECTION_ARROWS_MIN_ZOOM, 
+import {
+  TRAFFIC_LIGHT_MIN_ZOOM,
+  DIRECTION_ARROWS_MIN_ZOOM,
   MEDIAN_PLANTS_MIN_ZOOM,
   LANE_MARKINGS_MEDIAN_MIN_ZOOM,
 } from './constants';
+
+// ============================================================================
+// Caching Infrastructure
+// ============================================================================
+
+/** Cache version for invalidation when grid changes */
+let cacheVersion = 0;
+let cachedGridSize = 0;
+
+/** Road tile lookup cache - uses flat array for O(1) access */
+let roadTileCache: Uint8Array | null = null;
+let roadTileCacheVersion = -1;
+
+/** Adjacent roads cache - stores packed adjacency info */
+let adjacentRoadsCache: Uint8Array | null = null;
+let adjacentRoadsCacheVersion = -1;
+
+/** Merged road info cache */
+interface CachedMergedRoadInfo extends MergedRoadInfo {
+  version: number;
+}
+const mergedRoadCache = new Map<number, CachedMergedRoadInfo>();
+const MERGED_ROAD_CACHE_MAX_SIZE = 5000;
+
+/** Intersection cache for spatial lookups */
+let intersectionCache: Set<number> | null = null;
+let intersectionCacheVersion = -1;
+
+/** Traffic light state cache */
+let cachedLightState: TrafficLightState | null = null;
+let cachedLightStateTime = -1;
+
+/** Pre-allocated reusable objects to reduce allocations */
+const _reusableAdjacentRoads = { north: false, east: false, south: false, west: false };
+const _reusableMergedRoadInfo: MergedRoadInfo = {
+  type: 'single',
+  orientation: 'intersection',
+  laneCount: 1,
+  hasMedian: false,
+  medianType: 'none',
+  positionInMerge: 0,
+  mergeWidth: 1,
+  side: 'single',
+};
+
+/**
+ * Invalidate all caches - call when grid changes
+ * Uses version numbers for lazy invalidation
+ */
+export function invalidateTrafficCache(): void {
+  cacheVersion++;
+}
+
+/**
+ * Pack x,y coordinates into a single number for map keys
+ * Supports grids up to 65535x65535
+ */
+function packCoords(x: number, y: number): number {
+  return (x << 16) | (y & 0xFFFF);
+}
+
+/**
+ * Initialize or update the road tile cache
+ */
+function updateRoadTileCache(grid: Tile[][], gridSize: number): void {
+  if (roadTileCacheVersion === cacheVersion && cachedGridSize === gridSize) {
+    return;
+  }
+
+  cachedGridSize = gridSize;
+  const size = gridSize * gridSize;
+
+  if (!roadTileCache || roadTileCache.length < size) {
+    roadTileCache = new Uint8Array(size);
+  }
+
+  // Populate cache with road data
+  for (let y = 0; y < gridSize; y++) {
+    const row = grid[y];
+    const baseIdx = y * gridSize;
+    for (let x = 0; x < gridSize; x++) {
+      roadTileCache[baseIdx + x] = row[x].building.type === 'road' ? 1 : 0;
+    }
+  }
+
+  roadTileCacheVersion = cacheVersion;
+}
+
+/**
+ * Fast road lookup using cache
+ */
+function isRoadCached(gridSize: number, x: number, y: number): boolean {
+  if (x < 0 || y < 0 || x >= gridSize || y >= gridSize) return false;
+  return roadTileCache![y * gridSize + x] === 1;
+}
 
 // ============================================================================
 // Types
@@ -96,15 +198,67 @@ export const ROAD_COLORS = {
 // ============================================================================
 
 /**
- * Check if a tile is a road
+ * Check if a tile is a road - uses cached lookup when available
+ * @param grid - The tile grid (used for cache initialization)
+ * @param gridSize - Size of the grid
+ * @param x - Grid X coordinate
+ * @param y - Grid Y coordinate
  */
 function isRoad(grid: Tile[][], gridSize: number, x: number, y: number): boolean {
-  if (x < 0 || y < 0 || x >= gridSize || y >= gridSize) return false;
-  return grid[y][x].building.type === 'road';
+  // Ensure cache is up to date
+  updateRoadTileCache(grid, gridSize);
+  return isRoadCached(gridSize, x, y);
 }
 
 /**
- * Get adjacent road info for a tile
+ * Fast uncached road check - only for internal use when cache is guaranteed valid
+ */
+function isRoadFast(gridSize: number, x: number, y: number): boolean {
+  if (x < 0 || y < 0 || x >= gridSize || y >= gridSize) return false;
+  return roadTileCache![y * gridSize + x] === 1;
+}
+
+/**
+ * Update adjacent roads cache for efficient lookups
+ * Packs adjacency info into 4 bits: north|east|south|west
+ */
+function updateAdjacentRoadsCache(grid: Tile[][], gridSize: number): void {
+  if (adjacentRoadsCacheVersion === cacheVersion) {
+    return;
+  }
+
+  // Ensure road tile cache is up to date first
+  updateRoadTileCache(grid, gridSize);
+
+  const size = gridSize * gridSize;
+  if (!adjacentRoadsCache || adjacentRoadsCache.length < size) {
+    adjacentRoadsCache = new Uint8Array(size);
+  }
+
+  // Populate adjacency data
+  for (let y = 0; y < gridSize; y++) {
+    const baseIdx = y * gridSize;
+    for (let x = 0; x < gridSize; x++) {
+      let packed = 0;
+      // North (x-1, y) -> bit 3
+      if (x > 0 && roadTileCache![baseIdx + x - 1] === 1) packed |= 8;
+      // East (x, y-1) -> bit 2
+      if (y > 0 && roadTileCache![(y - 1) * gridSize + x] === 1) packed |= 4;
+      // South (x+1, y) -> bit 1
+      if (x < gridSize - 1 && roadTileCache![baseIdx + x + 1] === 1) packed |= 2;
+      // West (x, y+1) -> bit 0
+      if (y < gridSize - 1 && roadTileCache![(y + 1) * gridSize + x] === 1) packed |= 1;
+      adjacentRoadsCache[baseIdx + x] = packed;
+    }
+  }
+
+  adjacentRoadsCacheVersion = cacheVersion;
+}
+
+/**
+ * Get adjacent road info for a tile - uses cached data
+ * Returns a reusable object to minimize allocations
+ * IMPORTANT: Do not store the returned object - it will be reused!
  */
 export function getAdjacentRoads(
   grid: Tile[][],
@@ -112,12 +266,43 @@ export function getAdjacentRoads(
   x: number,
   y: number
 ): { north: boolean; east: boolean; south: boolean; west: boolean } {
-  return {
-    north: isRoad(grid, gridSize, x - 1, y),
-    east: isRoad(grid, gridSize, x, y - 1),
-    south: isRoad(grid, gridSize, x + 1, y),
-    west: isRoad(grid, gridSize, x, y + 1),
-  };
+  updateAdjacentRoadsCache(grid, gridSize);
+  return getAdjacentRoadsFast(gridSize, x, y);
+}
+
+/**
+ * Fast adjacent roads lookup - only for internal use when cache is valid
+ * Returns a reusable object - do not store the reference!
+ */
+function getAdjacentRoadsFast(
+  gridSize: number,
+  x: number,
+  y: number
+): { north: boolean; east: boolean; south: boolean; west: boolean } {
+  if (x < 0 || y < 0 || x >= gridSize || y >= gridSize) {
+    _reusableAdjacentRoads.north = false;
+    _reusableAdjacentRoads.east = false;
+    _reusableAdjacentRoads.south = false;
+    _reusableAdjacentRoads.west = false;
+    return _reusableAdjacentRoads;
+  }
+
+  const packed = adjacentRoadsCache![y * gridSize + x];
+  _reusableAdjacentRoads.north = (packed & 8) !== 0;
+  _reusableAdjacentRoads.east = (packed & 4) !== 0;
+  _reusableAdjacentRoads.south = (packed & 2) !== 0;
+  _reusableAdjacentRoads.west = (packed & 1) !== 0;
+  return _reusableAdjacentRoads;
+}
+
+/**
+ * Count adjacent roads using bitwise operations (faster than boolean counting)
+ */
+function countAdjacentRoadsFast(gridSize: number, x: number, y: number): number {
+  if (x < 0 || y < 0 || x >= gridSize || y >= gridSize) return 0;
+  const packed = adjacentRoadsCache![y * gridSize + x];
+  // Count set bits (population count for 4 bits)
+  return ((packed & 1) + ((packed >> 1) & 1) + ((packed >> 2) & 1) + ((packed >> 3) & 1));
 }
 
 /**

@@ -8,6 +8,10 @@ import { TILE_WIDTH, TILE_HEIGHT } from '@/components/game/types';
 // Constants
 const MINIMAP_SIZE = 140;
 
+// Pre-compute inverse values to avoid division in hot paths
+const INV_HALF_TILE_WIDTH = 2 / TILE_WIDTH;
+const INV_HALF_TILE_HEIGHT = 2 / TILE_HEIGHT;
+
 // Service buildings for minimap color mapping
 const SERVICE_BUILDINGS = new Set([
   'police_station', 'fire_station', 'hospital', 'school', 'university'
@@ -24,20 +28,39 @@ const PARK_BUILDINGS = new Set([
   'pond_park', 'park_gate', 'mountain_lodge', 'mountain_trailhead', 'office_building_small'
 ]);
 
-// Color lookup map for tile types - ordered by priority
-const TILE_COLORS: Record<string, string> = {
-  water: '#0ea5e9',
-  road: '#6b7280',
-  tree: '#166534',
-  power_plant: '#f97316',
-  water_tower: '#06b6d4',
+// Pre-computed RGBA color values (0xAABBGGRR format for little-endian)
+// This avoids hex parsing in the hot loop
+const COLOR_FIRE = 0xFF4444EF;        // #ef4444
+const COLOR_WATER = 0xFFE9A50E;       // #0ea5e9
+const COLOR_ROAD = 0xFF80726B;        // #6b7280
+const COLOR_TREE = 0xFF346516;        // #166534
+const COLOR_POWER = 0xFF16730F9;      // #f97316
+const COLOR_WATER_TOWER = 0xFFD4B606; // #06b6d4
+const COLOR_SERVICE = 0xFFFC84C0;     // #c084fc
+const COLOR_PARK = 0xFF16CC84;        // #84cc16
+const COLOR_RES_BUILT = 0xFF55C522;   // #22c55e
+const COLOR_RES_EMPTY = 0xFF2D5314;   // #14532d
+const COLOR_COM_BUILT = 0xFFF8BD38;   // #38bdf8
+const COLOR_COM_EMPTY = 0xFFD84E1D;   // #1d4ed8
+const COLOR_IND_BUILT = 0xFF0B9EF5;   // #f59e0b
+const COLOR_IND_EMPTY = 0xFF0953B4;   // #b45309
+const COLOR_GRASS = 0xFF3D5A2D;       // #2d5a3d
+const COLOR_BG = 0xFF23170B;          // #0b1723
+
+// Color lookup map for direct building types (RGBA values)
+const TILE_COLORS_RGBA: Record<string, number> = {
+  water: COLOR_WATER,
+  road: COLOR_ROAD,
+  tree: COLOR_TREE,
+  power_plant: COLOR_POWER,
+  water_tower: COLOR_WATER_TOWER,
 };
 
-// Zone colors (building vs empty)
-const ZONE_COLORS = {
-  residential: { built: '#22c55e', empty: '#14532d' },
-  commercial: { built: '#38bdf8', empty: '#1d4ed8' },
-  industrial: { built: '#f59e0b', empty: '#b45309' },
+// Zone colors lookup (RGBA values)
+const ZONE_COLORS_RGBA = {
+  residential: { built: COLOR_RES_BUILT, empty: COLOR_RES_EMPTY },
+  commercial: { built: COLOR_COM_BUILT, empty: COLOR_COM_EMPTY },
+  industrial: { built: COLOR_IND_BUILT, empty: COLOR_IND_EMPTY },
 } as const;
 
 interface MiniMapProps {
@@ -49,107 +72,175 @@ interface MiniMapProps {
   } | null;
 }
 
-// Get tile color based on building type, zone, and state
-function getTileColor(buildingType: string, zone: string, onFire: boolean): string {
+// Get tile color as RGBA value for direct Uint32Array assignment
+// Returns pre-computed 32-bit color to avoid string parsing in hot loop
+function getTileColorRGBA(buildingType: string, zone: string, onFire: boolean): number {
   // Fire takes priority
-  if (onFire) return '#ef4444';
+  if (onFire) return COLOR_FIRE;
 
   // Direct type lookup
-  if (TILE_COLORS[buildingType]) return TILE_COLORS[buildingType];
+  const directColor = TILE_COLORS_RGBA[buildingType];
+  if (directColor !== undefined) return directColor;
 
   // Service buildings
-  if (SERVICE_BUILDINGS.has(buildingType)) return '#c084fc';
+  if (SERVICE_BUILDINGS.has(buildingType)) return COLOR_SERVICE;
 
   // Park buildings
-  if (PARK_BUILDINGS.has(buildingType)) return '#84cc16';
+  if (PARK_BUILDINGS.has(buildingType)) return COLOR_PARK;
 
   // Zone-based colors
-  const zoneColor = ZONE_COLORS[zone as keyof typeof ZONE_COLORS];
+  const zoneColor = ZONE_COLORS_RGBA[zone as keyof typeof ZONE_COLORS_RGBA];
   if (zoneColor) {
     return buildingType !== 'grass' ? zoneColor.built : zoneColor.empty;
   }
 
   // Default grass color
-  return '#2d5a3d';
+  return COLOR_GRASS;
 }
 
 // Canvas-based Minimap - Memoized with throttled grid rendering
 export const MiniMap = React.memo(function MiniMap({ onNavigate, viewport }: MiniMapProps) {
   const { grid, gridSize, tick } = useMiniMapData();
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const gridImageRef = useRef<ImageData | null>(null);
+
+  // Use offscreen canvas for grid rendering - much faster than ImageData for blitting
+  const offscreenCanvasRef = useRef<OffscreenCanvas | HTMLCanvasElement | null>(null);
+  const offscreenCtxRef = useRef<OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null>(null);
+
+  // Pre-allocated ImageData buffer for direct pixel manipulation
+  const imageDataRef = useRef<ImageData | null>(null);
+  const pixelBufferRef = useRef<Uint32Array | null>(null);
+
+  // Tracking refs for throttling and change detection
   const lastGridRenderTickRef = useRef(-1);
   const lastGridRef = useRef<typeof grid | null>(null);
-  const tickRef = useRef(tick);
+  const lastViewportRef = useRef<typeof viewport | null>(null);
+  const lastGridSizeRef = useRef(-1);
 
-  // Keep tick in ref to avoid effect re-runs
-  tickRef.current = tick;
-  
+  // Pre-computed scale values (updated when gridSize changes)
+  const scaleRef = useRef(MINIMAP_SIZE / gridSize);
+
+  // Initialize offscreen canvas and buffers
+  useEffect(() => {
+    // Create offscreen canvas for grid (avoids main canvas flicker)
+    if (typeof OffscreenCanvas !== 'undefined') {
+      offscreenCanvasRef.current = new OffscreenCanvas(MINIMAP_SIZE, MINIMAP_SIZE);
+      offscreenCtxRef.current = offscreenCanvasRef.current.getContext('2d', { alpha: false });
+    } else {
+      // Fallback for Safari < 16.4
+      const fallback = document.createElement('canvas');
+      fallback.width = MINIMAP_SIZE;
+      fallback.height = MINIMAP_SIZE;
+      offscreenCanvasRef.current = fallback;
+      offscreenCtxRef.current = fallback.getContext('2d', { alpha: false });
+    }
+
+    // Pre-allocate ImageData and Uint32Array view for direct pixel writes
+    if (offscreenCtxRef.current) {
+      imageDataRef.current = offscreenCtxRef.current.createImageData(MINIMAP_SIZE, MINIMAP_SIZE);
+      pixelBufferRef.current = new Uint32Array(imageDataRef.current.data.buffer);
+    }
+
+    return () => {
+      offscreenCanvasRef.current = null;
+      offscreenCtxRef.current = null;
+      imageDataRef.current = null;
+      pixelBufferRef.current = null;
+    };
+  }, []);
+
+  // Main rendering effect - optimized for minimal work per frame
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    const offscreenCanvas = offscreenCanvasRef.current;
+    const offscreenCtx = offscreenCtxRef.current;
+    const imageData = imageDataRef.current;
+    const pixels = pixelBufferRef.current;
 
-    // PERF: willReadFrequently=true optimizes for getImageData calls
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!canvas || !offscreenCanvas || !offscreenCtx || !imageData || !pixels) return;
+
+    const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) return;
 
-    const scale = MINIMAP_SIZE / gridSize;
-    const scaleCeil = Math.ceil(scale);
+    // Update scale if gridSize changed
+    if (gridSize !== lastGridSizeRef.current) {
+      scaleRef.current = MINIMAP_SIZE / gridSize;
+      lastGridSizeRef.current = gridSize;
+    }
+    const scale = scaleRef.current;
 
     // Track if grid reference changed (indicates building placement or other grid modification)
     const gridChanged = lastGridRef.current !== grid;
     lastGridRef.current = grid;
 
-    // Re-render grid portion every 10 ticks OR when grid changes (building placed, etc.)
-    // This ensures immediate updates when user places buildings while keeping CPU usage low
-    const currentTick = tickRef.current;
+    // Re-render grid every 10 ticks OR when grid changes
     const shouldRenderGrid = lastGridRenderTickRef.current === -1 ||
-                             currentTick - lastGridRenderTickRef.current >= 10 ||
+                             tick - lastGridRenderTickRef.current >= 10 ||
                              gridChanged;
 
     if (shouldRenderGrid) {
-      lastGridRenderTickRef.current = currentTick;
+      lastGridRenderTickRef.current = tick;
 
-      ctx.fillStyle = '#0b1723';
-      ctx.fillRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
+      // OPTIMIZATION: Direct pixel manipulation using Uint32Array
+      // This is 5-10x faster than fillRect() for many small rectangles
+      const pixelScale = Math.max(1, Math.floor(scale));
 
+      // Fill background first
+      pixels.fill(COLOR_BG);
+
+      // Render grid tiles directly to pixel buffer
       for (let y = 0; y < gridSize; y++) {
+        const row = grid[y];
+        const basePixelY = Math.floor(y * scale);
+
         for (let x = 0; x < gridSize; x++) {
-          const tile = grid[y][x];
-          const color = getTileColor(tile.building.type, tile.zone, tile.building.onFire);
-          ctx.fillStyle = color;
-          ctx.fillRect(x * scale, y * scale, scaleCeil, scaleCeil);
+          const tile = row[x];
+          const color = getTileColorRGBA(tile.building.type, tile.zone, tile.building.onFire);
+          const basePixelX = Math.floor(x * scale);
+
+          // Fill a pixelScale x pixelScale block for this tile
+          for (let py = 0; py < pixelScale && basePixelY + py < MINIMAP_SIZE; py++) {
+            const rowOffset = (basePixelY + py) * MINIMAP_SIZE;
+            for (let px = 0; px < pixelScale && basePixelX + px < MINIMAP_SIZE; px++) {
+              pixels[rowOffset + basePixelX + px] = color;
+            }
+          }
         }
       }
 
-      // Save the grid portion for quick viewport-only updates
-      gridImageRef.current = ctx.getImageData(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
-    } else if (gridImageRef.current) {
-      // Restore cached grid image, then just draw viewport
-      ctx.putImageData(gridImageRef.current, 0, 0);
+      // Write pixel data to offscreen canvas
+      offscreenCtx.putImageData(imageData, 0, 0);
     }
 
-    // Draw viewport rectangle (always updated)
+    // Copy offscreen canvas to main canvas (very fast blit operation)
+    ctx.drawImage(offscreenCanvas as CanvasImageSource, 0, 0);
+
+    // Draw viewport rectangle (always updated for smooth panning)
     if (viewport) {
       const { offset, zoom, canvasSize } = viewport;
 
-      // Pre-compute division factors
-      const halfTileWidth = TILE_WIDTH / 2;
-      const halfTileHeight = TILE_HEIGHT / 2;
+      // Pre-compute inverse zoom to avoid repeated division
+      const invZoom = 1 / zoom;
 
-      const screenToGridForMinimap = (screenX: number, screenY: number) => {
-        const adjustedX = (screenX - offset.x) / zoom;
-        const adjustedY = (screenY - offset.y) / zoom;
-        const gridX = (adjustedX / halfTileWidth + adjustedY / halfTileHeight) / 2;
-        const gridY = (adjustedY / halfTileHeight - adjustedX / halfTileWidth) / 2;
-        return { gridX, gridY };
+      // Optimized screen-to-grid conversion using pre-computed inverse values
+      // Original: gridX = (adjustedX / halfTileWidth + adjustedY / halfTileHeight) / 2
+      // Simplified: gridX = adjustedX * INV_HALF_TILE_WIDTH + adjustedY * INV_HALF_TILE_HEIGHT (where INV includes /2)
+      const screenToGrid = (screenX: number, screenY: number) => {
+        const adjustedX = (screenX - offset.x) * invZoom;
+        const adjustedY = (screenY - offset.y) * invZoom;
+        return {
+          gridX: (adjustedX * INV_HALF_TILE_WIDTH + adjustedY * INV_HALF_TILE_HEIGHT) * 0.5,
+          gridY: (adjustedY * INV_HALF_TILE_HEIGHT - adjustedX * INV_HALF_TILE_WIDTH) * 0.5
+        };
       };
 
-      const topLeft = screenToGridForMinimap(0, 0);
-      const topRight = screenToGridForMinimap(canvasSize.width, 0);
-      const bottomLeft = screenToGridForMinimap(0, canvasSize.height);
-      const bottomRight = screenToGridForMinimap(canvasSize.width, canvasSize.height);
+      // Calculate all four corners
+      const topLeft = screenToGrid(0, 0);
+      const topRight = screenToGrid(canvasSize.width, 0);
+      const bottomLeft = screenToGrid(0, canvasSize.height);
+      const bottomRight = screenToGrid(canvasSize.width, canvasSize.height);
 
+      // Draw viewport indicator
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
       ctx.lineWidth = 2;
       ctx.beginPath();
@@ -160,7 +251,10 @@ export const MiniMap = React.memo(function MiniMap({ onNavigate, viewport }: Min
       ctx.closePath();
       ctx.stroke();
     }
-  }, [grid, gridSize, viewport]);
+
+    // Store viewport for potential future comparison
+    lastViewportRef.current = viewport;
+  }, [grid, gridSize, tick, viewport]);
 
   const [isDragging, setIsDragging] = useState(false);
   

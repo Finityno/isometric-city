@@ -1,111 +1,169 @@
 // Game-specific types for rendering and animation
 
-// Isometric tile dimensions (shared constants)
-export const TILE_WIDTH = 64;
-export const HEIGHT_RATIO = 0.60;
+// ============================================================================
+// Constants
+// ============================================================================
+
+/** Isometric tile width in pixels */
+export const TILE_WIDTH = 64 as const;
+/** Height to width ratio for isometric projection */
+export const HEIGHT_RATIO = 0.60 as const;
+/** Calculated tile height based on width and ratio */
 export const TILE_HEIGHT = TILE_WIDTH * HEIGHT_RATIO;
-export const KEY_PAN_SPEED = 520; // Pixels per second for keyboard panning
+/** Pixels per second for keyboard panning */
+export const KEY_PAN_SPEED = 520 as const;
 
-// Car/Vehicle types
-export type CarDirection = 'north' | 'east' | 'south' | 'west';
+// ============================================================================
+// Shared Base Interfaces
+// ============================================================================
 
-export type Car = {
-  id: number;
+/** Base interface for entities with screen position */
+interface ScreenPositioned {
+  readonly x: number;
+  readonly y: number;
+}
+
+/** Base interface for entities with tile position */
+interface TilePositioned {
   tileX: number;
   tileY: number;
-  direction: CarDirection;
-  progress: number;
-  speed: number;
+}
+
+/** Base interface for entities with lifecycle tracking */
+interface Lifecycle {
   age: number;
   maxAge: number;
-  color: string;
-  laneOffset: number;
-};
+}
 
-// Airplane types for airport animation
-export type AirplaneState = 'flying' | 'landing' | 'taking_off' | 'taxiing';
+/** Base interface for entities with movement */
+interface Moveable {
+  speed: number;
+  progress: number;
+}
 
-// Plane model types from the sprite sheet
-export type PlaneType = '737' | '777' | '747' | 'a380' | 'g650' | 'seaplane';
-
-export type ContrailParticle = {
+/** Base interface for particle effects (mutable for object pooling) */
+interface BaseParticle {
   x: number;
   y: number;
   age: number;
   opacity: number;
-};
+}
 
-export type Airplane = {
-  id: number;
-  // Screen position (isometric coordinates)
-  x: number;
-  y: number;
-  // Flight direction in radians
+/** Base interface for entities with wake/contrail effects */
+interface HasParticleTrail<T extends BaseParticle> {
+  readonly contrail?: readonly T[];
+  readonly wake?: readonly T[];
+}
+
+// ============================================================================
+// Direction Types
+// ============================================================================
+
+/** Cardinal directions for vehicle/entity movement */
+export type CarDirection = 'north' | 'east' | 'south' | 'west';
+
+/** Map edge directions */
+export type EdgeDirection = CarDirection;
+
+// ============================================================================
+// Car/Vehicle Types
+// ============================================================================
+
+export interface Car extends TilePositioned, Moveable, Lifecycle {
+  readonly id: number;
+  direction: CarDirection;
+  readonly color: string;
+  laneOffset: number;
+}
+
+// ============================================================================
+// Aircraft Types
+// ============================================================================
+
+/** Airplane operational states */
+export type AirplaneState = 'flying' | 'landing' | 'taking_off' | 'taxiing';
+
+/** Plane model types from the sprite sheet */
+export type PlaneType = '737' | '777' | '747' | 'a380' | 'g650' | 'seaplane';
+
+/** Contrail particle for aircraft trails */
+export interface ContrailParticle extends BaseParticle {}
+
+/** Base interface for flying entities with altitude */
+interface FlyingEntity {
+  /** Flight/movement direction in radians */
   angle: number;
-  // Current state
-  state: AirplaneState;
-  // Speed (pixels per second in screen space)
-  speed: number;
-  // Altitude (0 = ground, 1 = cruising altitude) - affects scale and shadow
+  /** Current altitude (0 = ground, 1 = cruising) */
   altitude: number;
-  // Target altitude for transitions
+  /** Target altitude for transitions */
   targetAltitude: number;
-  // Airport tile coordinates (for landing/takeoff reference)
-  airportX: number;
-  airportY: number;
-  // Progress for landing/takeoff (0-1)
-  stateProgress: number;
-  // Contrail particles
-  contrail: ContrailParticle[];
-  // Time until despawn (for flying planes)
-  lifeTime: number;
-  // Plane color/style (legacy, for fallback rendering)
-  color: string;
-  // Plane model type from sprite sheet
-  planeType: PlaneType;
-};
+  /** Speed in pixels per second */
+  speed: number;
+}
 
-// Seaplane types for bay/water operations
+export interface Airplane extends FlyingEntity {
+  readonly id: number;
+  /** Screen position X (isometric coordinates) */
+  x: number;
+  /** Screen position Y (isometric coordinates) */
+  y: number;
+  /** Current operational state */
+  state: AirplaneState;
+  /** Airport tile X coordinate (for landing/takeoff reference) */
+  airportX: number;
+  /** Airport tile Y coordinate */
+  airportY: number;
+  /** Progress for landing/takeoff (0-1) */
+  stateProgress: number;
+  /** Contrail particles */
+  contrail: ContrailParticle[];
+  /** Time until despawn (for flying planes) */
+  lifeTime: number;
+  /** Plane color/style (legacy, for fallback rendering) */
+  readonly color: string;
+  /** Plane model type from sprite sheet */
+  readonly planeType: PlaneType;
+}
+
+/** Seaplane operational states */
 export type SeaplaneState = 'taxiing_water' | 'taking_off' | 'flying' | 'landing' | 'splashdown';
 
-export type Seaplane = {
-  id: number;
-  // Screen position (isometric coordinates)
+/** Wake particle for water vehicles */
+export interface WakeParticle extends BaseParticle {}
+
+export interface Seaplane extends FlyingEntity {
+  readonly id: number;
+  /** Screen position X (isometric coordinates) */
   x: number;
+  /** Screen position Y (isometric coordinates) */
   y: number;
-  // Flight/movement direction in radians
-  angle: number;
-  // Target angle for smooth turning (on water)
+  /** Target angle for smooth turning (on water) */
   targetAngle: number;
-  // Current state
+  /** Current operational state */
   state: SeaplaneState;
-  // Speed (pixels per second in screen space)
-  speed: number;
-  // Altitude (0 = on water, 1 = cruising altitude)
-  altitude: number;
-  // Target altitude for transitions
-  targetAltitude: number;
-  // Bay tile coordinates (home bay for landing reference)
+  /** Bay tile X coordinate (home bay for landing reference) */
   bayTileX: number;
+  /** Bay tile Y coordinate */
   bayTileY: number;
-  // Bay screen position (center of bay)
+  /** Bay screen position X (center of bay) */
   bayScreenX: number;
+  /** Bay screen position Y */
   bayScreenY: number;
-  // Progress for state transitions
+  /** Progress for state transitions (0-1) */
   stateProgress: number;
-  // Contrail particles (when flying at altitude)
+  /** Contrail particles (when flying at altitude) */
   contrail: ContrailParticle[];
-  // Wake particles (when on water)
+  /** Wake particles (when on water) */
   wake: WakeParticle[];
-  // Wake spawn progress
+  /** Wake spawn progress */
   wakeSpawnProgress: number;
-  // Time until state change
+  /** Time until state change */
   lifeTime: number;
-  // Time spent taxiing on water before takeoff
+  /** Time spent taxiing on water before takeoff */
   taxiTime: number;
-  // Seaplane color/style
-  color: string;
-};
+  /** Seaplane color/style */
+  readonly color: string;
+}
 
 // Helicopter types for hospital/airport transport
 export type HelicopterState = 'flying' | 'hovering' | 'landing' | 'taking_off';
@@ -280,13 +338,6 @@ export type Pedestrian = {
 
 // Boat types for water navigation
 export type BoatState = 'sailing' | 'docked' | 'arriving' | 'departing' | 'touring';
-
-export type WakeParticle = {
-  x: number;
-  y: number;
-  age: number;
-  opacity: number;
-};
 
 export type TourWaypoint = {
   screenX: number;

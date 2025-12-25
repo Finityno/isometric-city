@@ -1,6 +1,14 @@
 /**
  * Train System - Manages train spawning, movement, and rendering
  * Supports multi-carriage trains (passenger and freight)
+ *
+ * PERFORMANCE OPTIMIZATIONS:
+ * - Object pooling for trains and smoke particles
+ * - Spatial hashing for collision detection
+ * - Pre-computed constants and lookup tables
+ * - Minimized allocations in hot paths
+ * - Inlined math operations
+ * - Typed arrays where beneficial
  */
 
 import { Tile } from '@/types/game';
@@ -37,6 +45,180 @@ import {
   TrackType,
 } from './railSystem';
 import { gridToScreen } from './utils';
+
+// ============================================================================
+// Pre-computed Constants (avoid runtime calculations)
+// ============================================================================
+
+const HALF_TILE_WIDTH = TILE_WIDTH * 0.5;
+const HALF_TILE_HEIGHT = TILE_HEIGHT * 0.5;
+const QUARTER_TILE_WIDTH = TILE_WIDTH * 0.25;
+const QUARTER_TILE_HEIGHT = TILE_HEIGHT * 0.25;
+const THREE_QUARTER_TILE_WIDTH = TILE_WIDTH * 0.75;
+const THREE_QUARTER_TILE_HEIGHT = TILE_HEIGHT * 0.75;
+const TRACK_OFFSET_BASE = TILE_WIDTH * TRACK_SEPARATION_RATIO * 0.5;
+const SMOKE_SIZE_RANGE = TRAIN_SMOKE_PARTICLE_SIZE_MAX - TRAIN_SMOKE_PARTICLE_SIZE_MIN;
+const TWO_PI = Math.PI * 2;
+
+// Pre-computed direction indices for faster lookups
+const DIRECTION_INDEX: Record<CarDirection, number> = {
+  north: 0,
+  east: 1,
+  south: 2,
+  west: 3
+};
+
+// Pre-computed step values for each direction (avoid object creation)
+const DIR_STEP_X: Float32Array = new Float32Array([-1, 0, 1, 0]);
+const DIR_STEP_Y: Float32Array = new Float32Array([0, -1, 0, 1]);
+const DIR_VEC_DX: Float32Array = new Float32Array([
+  -HALF_TILE_WIDTH,
+  HALF_TILE_WIDTH,
+  HALF_TILE_WIDTH,
+  -HALF_TILE_WIDTH
+]);
+const DIR_VEC_DY: Float32Array = new Float32Array([
+  -HALF_TILE_HEIGHT,
+  -HALF_TILE_HEIGHT,
+  HALF_TILE_HEIGHT,
+  HALF_TILE_HEIGHT
+]);
+const DIR_ANGLES: Float32Array = new Float32Array([
+  Math.atan2(-HALF_TILE_HEIGHT, -HALF_TILE_WIDTH),
+  Math.atan2(-HALF_TILE_HEIGHT, HALF_TILE_WIDTH),
+  Math.atan2(HALF_TILE_HEIGHT, HALF_TILE_WIDTH),
+  Math.atan2(HALF_TILE_HEIGHT, -HALF_TILE_WIDTH)
+]);
+
+// ============================================================================
+// Object Pooling for Smoke Particles
+// ============================================================================
+
+const SMOKE_POOL_SIZE = 500;
+const smokeParticlePool: TrainSmokeParticle[] = [];
+let smokePoolIndex = 0;
+
+// Pre-allocate smoke particle pool
+for (let i = 0; i < SMOKE_POOL_SIZE; i++) {
+  smokeParticlePool.push({
+    x: 0, y: 0, vx: 0, vy: 0,
+    age: 0, maxAge: 0, size: 0, opacity: 0
+  });
+}
+
+/**
+ * Get a smoke particle from the pool (reuses objects to avoid GC)
+ */
+function getSmokeParticle(): TrainSmokeParticle {
+  const particle = smokeParticlePool[smokePoolIndex];
+  smokePoolIndex = (smokePoolIndex + 1) % SMOKE_POOL_SIZE;
+  return particle;
+}
+
+// ============================================================================
+// Spatial Hash for Collision Detection
+// ============================================================================
+
+const SPATIAL_CELL_SIZE = 4; // Grid cells per spatial hash cell
+const spatialHashMap = new Map<number, Train[]>();
+let spatialHashTrains: Train[] = [];
+
+/**
+ * Get spatial hash key for a tile position
+ */
+function getSpatialKey(tileX: number, tileY: number): number {
+  const cx = (tileX / SPATIAL_CELL_SIZE) | 0;
+  const cy = (tileY / SPATIAL_CELL_SIZE) | 0;
+  return (cx << 16) | (cy & 0xFFFF);
+}
+
+/**
+ * Build spatial hash from train list (call once per frame before collision checks)
+ */
+function buildSpatialHash(trains: Train[]): void {
+  spatialHashMap.clear();
+  spatialHashTrains = trains;
+
+  for (let i = 0, len = trains.length; i < len; i++) {
+    const train = trains[i];
+    const key = getSpatialKey(train.tileX, train.tileY);
+    let cell = spatialHashMap.get(key);
+    if (!cell) {
+      cell = [];
+      spatialHashMap.set(key, cell);
+    }
+    cell.push(train);
+  }
+}
+
+/**
+ * Get nearby trains using spatial hash
+ */
+function getNearbyTrains(tileX: number, tileY: number): Train[] {
+  const cx = (tileX / SPATIAL_CELL_SIZE) | 0;
+  const cy = (tileY / SPATIAL_CELL_SIZE) | 0;
+  const result: Train[] = [];
+
+  // Check 3x3 cells around the position
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      const key = ((cx + dx) << 16) | ((cy + dy) & 0xFFFF);
+      const cell = spatialHashMap.get(key);
+      if (cell) {
+        for (let i = 0, len = cell.length; i < len; i++) {
+          result.push(cell[i]);
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+// ============================================================================
+// Track Path Cache
+// ============================================================================
+
+const trackPathCache = new Map<number, CarDirection[]>();
+const TRACK_CACHE_MAX_SIZE = 1000;
+
+/**
+ * Get cached rail direction options
+ */
+function getCachedRailDirections(
+  grid: Tile[][],
+  gridSize: number,
+  x: number,
+  y: number
+): CarDirection[] {
+  const key = (x << 16) | y;
+  let cached = trackPathCache.get(key);
+
+  if (!cached) {
+    cached = getRailDirectionOptions(grid, gridSize, x, y);
+    if (trackPathCache.size < TRACK_CACHE_MAX_SIZE) {
+      trackPathCache.set(key, cached);
+    }
+  }
+
+  return cached;
+}
+
+/**
+ * Clear track path cache (call when grid changes)
+ */
+export function clearTrackCache(): void {
+  trackPathCache.clear();
+}
+
+// ============================================================================
+// Reusable Objects (avoid allocations in hot paths)
+// ============================================================================
+
+// Reusable position objects
+const _tempPos = { x: 0, y: 0 };
+const _tempPos2 = { x: 0, y: 0 };
+const _tempBezierResult = { x: 0, y: 0, angle: 0 };
 
 // ============================================================================
 // Curve Interpolation Helpers

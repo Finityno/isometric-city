@@ -1,12 +1,19 @@
 /**
  * Dynamic Pedestrian System
- * 
+ *
  * Manages pedestrian behaviors including:
  * - Walking to destinations
  * - Entering and exiting buildings
  * - Participating in recreational activities
  * - Socializing with other pedestrians
  * - Varying activities based on building type
+ *
+ * PERFORMANCE OPTIMIZATIONS:
+ * - Object pooling for pedestrians to reduce GC pressure
+ * - Set-based lookups for building type checks (O(1) vs O(n))
+ * - Pre-allocated reusable objects for offsets
+ * - Cached beach tiles with invalidation
+ * - Minimized allocations in hot paths
  */
 
 import { Tile, BuildingType } from '@/types/game';
@@ -42,6 +49,29 @@ import {
 } from './constants';
 import { isRoadTile, getDirectionOptions, findPathOnRoads, getDirectionToTile, findNearestRoadToBuilding } from './utils';
 
+// ============================================================================
+// PERFORMANCE: Pre-computed constants and cached values
+// ============================================================================
+
+// PERF: Pre-compute array lengths to avoid repeated .length access
+const SKIN_COLORS_LEN = PEDESTRIAN_SKIN_COLORS.length;
+const SHIRT_COLORS_LEN = PEDESTRIAN_SHIRT_COLORS.length;
+const PANTS_COLORS_LEN = PEDESTRIAN_PANTS_COLORS.length;
+const HAT_COLORS_LEN = PEDESTRIAN_HAT_COLORS.length;
+const MAT_COLORS_LEN = PEDESTRIAN_MAT_COLORS.length;
+
+// PERF: Activity time range pre-computed
+const ACTIVITY_TIME_RANGE = PEDESTRIAN_MAX_ACTIVITY_TIME - PEDESTRIAN_MIN_ACTIVITY_TIME;
+const BUILDING_TIME_RANGE = PEDESTRIAN_BUILDING_MAX_TIME - PEDESTRIAN_BUILDING_MIN_TIME;
+const BEACH_TIME_RANGE = PEDESTRIAN_BEACH_MAX_TIME - PEDESTRIAN_BEACH_MIN_TIME;
+
+// PERF: Reusable offset object to avoid allocations in getRandomActivityOffset
+const _reusableOffset = { x: 0, y: 0 };
+
+// PERF: Reusable array for visible pedestrians (resized as needed)
+let _visiblePedestriansCache: Pedestrian[] = [];
+let _visiblePedestriansCacheVersion = -1;
+
 // PERF: Pedestrian ID map cache for O(1) lookups instead of O(n) array.find()
 // This is rebuilt each frame when pedestrians are updated
 let pedestrianIdMap: Map<number, Pedestrian> | null = null;
@@ -73,24 +103,31 @@ export function getPedestrianById(pedestrians: Pedestrian[], id: number): Pedest
   return map.get(id);
 }
 
+// PERF: Use Sets for O(1) lookup instead of O(n) array.includes()
 // Building types that are recreational (pedestrians do activities here)
-const RECREATION_BUILDINGS: BuildingType[] = [
+const RECREATION_BUILDINGS_SET: Set<BuildingType> = new Set([
   'park', 'park_large', 'tennis', 'basketball_courts', 'playground_small',
   'playground_large', 'baseball_field_small', 'soccer_field_small',
   'football_field', 'baseball_stadium', 'swimming_pool', 'skate_park',
   'mini_golf_course', 'bleachers_field', 'community_garden', 'pond_park',
   'amphitheater', 'community_center', 'campground', 'marina_docks_small',
   'pier_large', 'amusement_park', 'stadium', 'museum',
-];
+]);
 
+// PERF: Use Set for O(1) lookup
 // Buildings pedestrians can enter and spend time inside
-const ENTERABLE_BUILDINGS: BuildingType[] = [
+const ENTERABLE_BUILDINGS_SET: Set<BuildingType> = new Set([
   'shop_small', 'shop_medium', 'office_low', 'office_high', 'mall',
   'school', 'university', 'hospital', 'museum', 'community_center',
   'factory_small', 'factory_medium', 'factory_large', 'warehouse',
   'police_station', 'fire_station', 'city_hall', 'rail_station',
   'subway_station', 'mountain_lodge',
-];
+]);
+
+// PERF: Marina/pier types as Set for O(1) lookup in beach detection
+const MARINA_PIER_TYPES_SET: Set<BuildingType> = new Set([
+  'marina_docks_small', 'pier_large'
+]);
 
 // Map building types to possible activities
 // IMPORTANT: Sports activities (basketball, tennis, soccer, baseball) should ONLY
@@ -167,14 +204,14 @@ export function getActivityForBuilding(buildingType: BuildingType): PedestrianAc
  * Check if a building type is recreational
  */
 export function isRecreationalBuilding(buildingType: BuildingType): boolean {
-  return RECREATION_BUILDINGS.includes(buildingType);
+  return RECREATION_BUILDINGS_SET.has(buildingType);
 }
 
 /**
  * Check if a building type can be entered by pedestrians
  */
 export function canPedestrianEnterBuilding(buildingType: BuildingType): boolean {
-  return ENTERABLE_BUILDINGS.includes(buildingType);
+  return ENTERABLE_BUILDINGS_SET.has(buildingType);
 }
 
 /**

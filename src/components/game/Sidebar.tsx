@@ -1,11 +1,14 @@
 'use client';
 
-import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useRef, useState, useCallback, useEffect, memo, useMemo } from 'react';
 import {
-  useSidebarData,
+  useSelectedTool,
+  useMoney,
+  useActivePanel,
   useSetTool,
   useSetActivePanel,
   useSaveCity,
+  useSidebarData,
 } from '@/store/selectors';
 import { Tool, TOOL_INFO } from '@/types/game';
 import {
@@ -26,9 +29,190 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 
+// ============================================================================
+// STATIC DATA - Defined outside component to avoid recreating on every render
+// ============================================================================
+
+// Direct tool categories (shown inline)
+const DIRECT_CATEGORIES: Record<string, Tool[]> = {
+  'TOOLS': ['select', 'bulldoze', 'road', 'rail', 'subway'],
+  'ZONES': ['zone_residential', 'zone_commercial', 'zone_industrial', 'zone_dezone'],
+};
+
+// Submenu categories (hover to expand)
+const SUBMENU_CATEGORIES: ReadonlyArray<{
+  key: string;
+  label: string;
+  tools: Tool[];
+  forceOpenUpward?: boolean;
+}> = [
+  {
+    key: 'services',
+    label: 'Services',
+    tools: ['police_station', 'fire_station', 'hospital', 'school', 'university']
+  },
+  {
+    key: 'parks',
+    label: 'Parks',
+    tools: ['park', 'park_large', 'tennis', 'playground_small', 'playground_large', 'community_garden', 'pond_park', 'park_gate', 'greenhouse_garden']
+  },
+  {
+    key: 'sports',
+    label: 'Sports',
+    tools: ['basketball_courts', 'soccer_field_small', 'baseball_field_small', 'football_field', 'baseball_stadium', 'swimming_pool', 'skate_park', 'bleachers_field']
+  },
+  {
+    key: 'recreation',
+    label: 'Recreation',
+    tools: ['mini_golf_course', 'go_kart_track', 'amphitheater', 'roller_coaster_small', 'campground', 'cabin_house', 'mountain_lodge', 'mountain_trailhead']
+  },
+  {
+    key: 'waterfront',
+    label: 'Waterfront',
+    tools: ['marina_docks_small', 'pier_large']
+  },
+  {
+    key: 'community',
+    label: 'Community',
+    tools: ['community_center', 'animal_pens_farm', 'office_building_small']
+  },
+  {
+    key: 'utilities',
+    label: 'Utilities',
+    tools: ['power_plant', 'water_tower', 'subway_station', 'rail_station'],
+    forceOpenUpward: true
+  },
+  {
+    key: 'special',
+    label: 'Special',
+    tools: ['stadium', 'museum', 'airport', 'space_program', 'city_hall', 'amusement_park'],
+    forceOpenUpward: true
+  },
+];
+
+// Panel configuration - static data
+const PANELS = [
+  { panel: 'budget' as const, icon: <BudgetIcon size={16} />, label: 'Budget' },
+  { panel: 'statistics' as const, icon: <ChartIcon size={16} />, label: 'Statistics' },
+  { panel: 'advisors' as const, icon: <AdvisorIcon size={16} />, label: 'Advisors' },
+  { panel: 'settings' as const, icon: <SettingsIcon size={16} />, label: 'Settings' },
+] as const;
+
+const SUBMENU_GAP = 12; // Gap between sidebar and submenu
+const SUBMENU_MAX_HEIGHT = 220; // Approximate max height of submenu
+
+// ============================================================================
+// MEMOIZED SUB-COMPONENTS
+// ============================================================================
+
+// Individual tool button in submenu - memoized to prevent re-renders
+const SubmenuToolButton = memo(function SubmenuToolButton({
+  tool,
+  isSelected,
+  canAfford,
+  onSelectTool,
+}: {
+  tool: Tool;
+  isSelected: boolean;
+  canAfford: boolean;
+  onSelectTool: (tool: Tool) => void;
+}) {
+  const info = TOOL_INFO[tool];
+  if (!info) return null;
+
+  const handleClick = useCallback(() => {
+    onSelectTool(tool);
+  }, [onSelectTool, tool]);
+
+  return (
+    <Button
+      onClick={handleClick}
+      disabled={!canAfford && info.cost > 0}
+      variant={isSelected ? 'default' : 'ghost'}
+      className={`w-full justify-start gap-2 px-3 py-2 h-auto text-sm transition-all duration-150 ${
+        isSelected ? 'bg-primary text-primary-foreground shadow-sm' : 'hover:bg-muted/60'
+      }`}
+      title={`${info.description}${info.cost > 0 ? ` - Cost: $${info.cost}` : ''}`}
+    >
+      <span className="flex-1 text-left truncate">{info.name}</span>
+      {info.cost > 0 && (
+        <span className={`text-xs ${isSelected ? 'opacity-80' : 'opacity-50'}`}>${info.cost.toLocaleString()}</span>
+      )}
+    </Button>
+  );
+});
+
+// Individual tool button in direct categories - memoized
+const DirectToolButton = memo(function DirectToolButton({
+  tool,
+  isSelected,
+  canAfford,
+  onSelectTool,
+}: {
+  tool: Tool;
+  isSelected: boolean;
+  canAfford: boolean;
+  onSelectTool: (tool: Tool) => void;
+}) {
+  const info = TOOL_INFO[tool];
+  if (!info) return null;
+
+  const handleClick = useCallback(() => {
+    onSelectTool(tool);
+  }, [onSelectTool, tool]);
+
+  return (
+    <Button
+      onClick={handleClick}
+      disabled={!canAfford && info.cost > 0}
+      variant={isSelected ? 'default' : 'ghost'}
+      className={`w-full justify-start gap-3 px-3 py-2 h-auto text-sm ${
+        isSelected ? 'bg-primary text-primary-foreground' : ''
+      }`}
+      title={`${info.description}${info.cost > 0 ? ` - Cost: $${info.cost}` : ''}`}
+    >
+      <span className="flex-1 text-left truncate">{info.name}</span>
+      {info.cost > 0 && (
+        <span className="text-xs opacity-60">${info.cost}</span>
+      )}
+    </Button>
+  );
+});
+
+// Panel toggle button - memoized
+const PanelButton = memo(function PanelButton({
+  panel,
+  icon,
+  label,
+  isActive,
+  onToggle,
+}: {
+  panel: 'budget' | 'statistics' | 'advisors' | 'settings';
+  icon: React.ReactNode;
+  label: string;
+  isActive: boolean;
+  onToggle: (panel: 'budget' | 'statistics' | 'advisors' | 'settings') => void;
+}) {
+  const handleClick = useCallback(() => {
+    onToggle(panel);
+  }, [onToggle, panel]);
+
+  return (
+    <Button
+      onClick={handleClick}
+      variant={isActive ? 'default' : 'ghost'}
+      size="icon-sm"
+      className="w-full"
+      title={label}
+    >
+      {icon}
+    </Button>
+  );
+});
+
 // Hover Submenu Component for collapsible tool categories
 // Implements triangle-rule safe zone for forgiving cursor navigation
-const HoverSubmenu = React.memo(function HoverSubmenu({
+const HoverSubmenu = memo(function HoverSubmenu({
   label,
   tools,
   selectedTool,
@@ -37,7 +221,7 @@ const HoverSubmenu = React.memo(function HoverSubmenu({
   forceOpenUpward = false,
 }: {
   label: string;
-  tools: Tool[];
+  tools: readonly Tool[];
   selectedTool: Tool;
   money: number;
   onSelectTool: (tool: Tool) => void;
@@ -49,29 +233,27 @@ const HoverSubmenu = React.memo(function HoverSubmenu({
   const submenuRef = useRef<HTMLDivElement>(null);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastMousePos = useRef<{ x: number; y: number } | null>(null);
-  
+
   const hasSelectedTool = tools.includes(selectedTool);
-  const SUBMENU_GAP = 12; // Gap between sidebar and submenu
-  const SUBMENU_MAX_HEIGHT = 220; // Approximate max height of submenu
-  
+
   const clearCloseTimeout = useCallback(() => {
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
     }
   }, []);
-  
+
   const handleMouseEnter = useCallback(() => {
     clearCloseTimeout();
     // Calculate position based on button location
     if (buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect();
       const viewportHeight = window.innerHeight;
-      
+
       // Check if opening downward would overflow the screen
       const spaceBelow = viewportHeight - rect.top;
       const openUpward = forceOpenUpward || (spaceBelow < SUBMENU_MAX_HEIGHT && rect.top > SUBMENU_MAX_HEIGHT);
-      
+
       setMenuPosition({
         top: openUpward ? rect.bottom : rect.top,
         left: rect.right + SUBMENU_GAP,
@@ -81,54 +263,53 @@ const HoverSubmenu = React.memo(function HoverSubmenu({
     }
     setIsOpen(true);
   }, [clearCloseTimeout, forceOpenUpward]);
-  
+
   // Triangle rule: Check if cursor is moving toward the submenu
   const isMovingTowardSubmenu = useCallback((e: React.MouseEvent) => {
     if (!lastMousePos.current || !submenuRef.current) return false;
-    
+
     const submenuRect = submenuRef.current.getBoundingClientRect();
     const currentX = e.clientX;
     const currentY = e.clientY;
     const lastX = lastMousePos.current.x;
-    const lastY = lastMousePos.current.y;
-    
+
     // Check if moving rightward (toward submenu)
     const movingRight = currentX > lastX;
-    
+
     // Check if cursor is within vertical bounds of submenu (with generous padding)
     const padding = 50;
-    const withinVerticalBounds = 
-      currentY >= submenuRect.top - padding && 
+    const withinVerticalBounds =
+      currentY >= submenuRect.top - padding &&
       currentY <= submenuRect.bottom + padding;
-    
+
     return movingRight && withinVerticalBounds;
   }, []);
-  
+
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     lastMousePos.current = { x: e.clientX, y: e.clientY };
   }, []);
-  
+
   const handleMouseLeave = useCallback((e: React.MouseEvent) => {
     // If moving toward submenu, use a longer delay
     const delay = isMovingTowardSubmenu(e) ? 300 : 100;
-    
+
     clearCloseTimeout();
     timeoutRef.current = setTimeout(() => {
       setIsOpen(false);
     }, delay);
   }, [clearCloseTimeout, isMovingTowardSubmenu]);
-  
+
   const handleSubmenuEnter = useCallback(() => {
     clearCloseTimeout();
   }, [clearCloseTimeout]);
-  
+
   const handleSubmenuLeave = useCallback(() => {
     clearCloseTimeout();
     timeoutRef.current = setTimeout(() => {
       setIsOpen(false);
     }, 100);
   }, [clearCloseTimeout]);
-  
+
   // Clean up timeout on unmount
   useEffect(() => {
     return () => {
@@ -137,9 +318,9 @@ const HoverSubmenu = React.memo(function HoverSubmenu({
       }
     };
   }, []);
-  
+
   return (
-    <div 
+    <div
       className="relative"
       onMouseEnter={handleMouseEnter}
       onMouseMove={handleMouseMove}
@@ -154,16 +335,16 @@ const HoverSubmenu = React.memo(function HoverSubmenu({
         } ${isOpen ? 'bg-muted/80' : ''}`}
       >
         <span className="font-medium">{label}</span>
-        <svg 
+        <svg
           className={`w-4 h-4 transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`}
-          fill="none" 
-          viewBox="0 0 24 24" 
+          fill="none"
+          viewBox="0 0 24 24"
           stroke="currentColor"
         >
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
         </svg>
       </Button>
-      
+
       {/* Invisible bridge/safe-zone between button and submenu for triangle rule */}
       {isOpen && (
         <div
@@ -179,16 +360,16 @@ const HoverSubmenu = React.memo(function HoverSubmenu({
           onMouseLeave={handleSubmenuLeave}
         />
       )}
-      
+
       {/* Flyout Submenu - uses fixed positioning to escape all parent containers */}
       {isOpen && (
-        <div 
+        <div
           ref={submenuRef}
           className="fixed w-52 bg-sidebar backdrop-blur-sm border border-sidebar-border rounded-md shadow-xl overflow-hidden animate-submenu-in"
-          style={{ 
+          style={{
             boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(96, 165, 250, 0.1)',
             zIndex: 9999,
-            ...(menuPosition.openUpward 
+            ...(menuPosition.openUpward
               ? { bottom: `${window.innerHeight - menuPosition.top}px` }
               : { top: `${menuPosition.top}px` }),
             left: `${menuPosition.left}px`,
@@ -200,30 +381,15 @@ const HoverSubmenu = React.memo(function HoverSubmenu({
             <span className="text-[10px] font-bold tracking-widest text-muted-foreground uppercase">{label}</span>
           </div>
           <div className="p-1.5 flex flex-col gap-0.5 max-h-48 overflow-y-auto">
-            {tools.map(tool => {
-              const info = TOOL_INFO[tool];
-              if (!info) return null;
-              const isSelected = selectedTool === tool;
-              const canAfford = money >= info.cost;
-              
-              return (
-                <Button
-                  key={tool}
-                  onClick={() => onSelectTool(tool)}
-                  disabled={!canAfford && info.cost > 0}
-                  variant={isSelected ? 'default' : 'ghost'}
-                  className={`w-full justify-start gap-2 px-3 py-2 h-auto text-sm transition-all duration-150 ${
-                    isSelected ? 'bg-primary text-primary-foreground shadow-sm' : 'hover:bg-muted/60'
-                  }`}
-                  title={`${info.description}${info.cost > 0 ? ` - Cost: $${info.cost}` : ''}`}
-                >
-                  <span className="flex-1 text-left truncate">{info.name}</span>
-                  {info.cost > 0 && (
-                    <span className={`text-xs ${isSelected ? 'opacity-80' : 'opacity-50'}`}>${info.cost.toLocaleString()}</span>
-                  )}
-                </Button>
-              );
-            })}
+            {tools.map(tool => (
+              <SubmenuToolButton
+                key={tool}
+                tool={tool}
+                isSelected={selectedTool === tool}
+                canAfford={money >= (TOOL_INFO[tool]?.cost ?? 0)}
+                onSelectTool={onSelectTool}
+              />
+            ))}
           </div>
         </div>
       )}

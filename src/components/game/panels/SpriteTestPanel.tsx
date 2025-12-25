@@ -1,15 +1,57 @@
 'use client';
 
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react';
 import { useCurrentSpritePack } from '@/store/selectors';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { getSpriteCoords } from '@/lib/renderConfig';
 
-export function SpriteTestPanel({ onClose }: { onClose: () => void }) {
+// Types for sprite rendering
+interface SpriteCoords {
+  sx: number;
+  sy: number;
+  sw: number;
+  sh: number;
+}
+
+interface SpriteItem {
+  label: string;
+  coords: SpriteCoords;
+  index?: number;
+}
+
+// Cache for rendered sprite grids (offscreen canvases)
+const spriteGridCache = new Map<string, HTMLCanvasElement>();
+
+// Image loading cache to prevent duplicate loads
+const imageCache = new Map<string, HTMLImageElement>();
+
+// Memoized TabTrigger component to prevent re-renders
+const MemoizedTabTrigger = memo(function MemoizedTabTrigger({
+  id,
+  label
+}: {
+  id: string;
+  label: string;
+}) {
+  return (
+    <TabsTrigger value={id} className="text-xs">
+      {label}
+    </TabsTrigger>
+  );
+});
+
+function SpriteTestPanelInner({ onClose }: { onClose: () => void }) {
   const currentSpritePack = useCurrentSpritePack();
   const [selectedTab, setSelectedTab] = useState<string>('main');
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Use ref for canvas context to avoid re-acquisition
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
+  // Use ref to track if we need to redraw
+  const lastRenderKeyRef = useRef<string>('');
+  // Device pixel ratio cached in ref
+  const dprRef = useRef<number>(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1);
+
   const [spriteSheets, setSpriteSheets] = useState<Record<string, HTMLImageElement | null>>({
     main: null,
     construction: null,
@@ -20,37 +62,58 @@ export function SpriteTestPanel({ onClose }: { onClose: () => void }) {
     parksConstruction: null,
   });
   
-  // Load all sprite sheets from current pack
+  // Optimized image loader with caching
+  const loadSheetCached = useCallback((src: string | undefined): Promise<HTMLImageElement | null> => {
+    if (!src) return Promise.resolve(null);
+
+    // Check cache first
+    const cached = imageCache.get(src);
+    if (cached) return Promise.resolve(cached);
+
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        imageCache.set(src, img);
+        resolve(img);
+      };
+      img.onerror = () => resolve(null);
+      img.src = src;
+    });
+  }, []);
+
+  // Load all sprite sheets from current pack - batched state update
   useEffect(() => {
-    const loadSheet = (src: string | undefined, key: string): Promise<void> => {
-      if (!src) {
-        setSpriteSheets(prev => ({ ...prev, [key]: null }));
-        return Promise.resolve();
+    let cancelled = false;
+
+    const loadAllSheets = async () => {
+      const [main, construction, abandoned, dense, modern, parks, parksConstruction] = await Promise.all([
+        loadSheetCached(currentSpritePack.src),
+        loadSheetCached(currentSpritePack.constructionSrc),
+        loadSheetCached(currentSpritePack.abandonedSrc),
+        loadSheetCached(currentSpritePack.denseSrc),
+        loadSheetCached(currentSpritePack.modernSrc),
+        loadSheetCached(currentSpritePack.parksSrc),
+        loadSheetCached(currentSpritePack.parksConstructionSrc),
+      ]);
+
+      if (!cancelled) {
+        // Batch all state updates into single setState call
+        setSpriteSheets({
+          main,
+          construction,
+          abandoned,
+          dense,
+          modern,
+          parks,
+          parksConstruction,
+        });
       }
-      return new Promise((resolve) => {
-        const img = new Image();
-        img.onload = () => {
-          setSpriteSheets(prev => ({ ...prev, [key]: img }));
-          resolve();
-        };
-        img.onerror = () => {
-          setSpriteSheets(prev => ({ ...prev, [key]: null }));
-          resolve();
-        };
-        img.src = src;
-      });
     };
-    
-    Promise.all([
-      loadSheet(currentSpritePack.src, 'main'),
-      loadSheet(currentSpritePack.constructionSrc, 'construction'),
-      loadSheet(currentSpritePack.abandonedSrc, 'abandoned'),
-      loadSheet(currentSpritePack.denseSrc, 'dense'),
-      loadSheet(currentSpritePack.modernSrc, 'modern'),
-      loadSheet(currentSpritePack.parksSrc, 'parks'),
-      loadSheet(currentSpritePack.parksConstructionSrc, 'parksConstruction'),
-    ]);
-  }, [currentSpritePack]);
+
+    loadAllSheets();
+
+    return () => { cancelled = true; };
+  }, [currentSpritePack, loadSheetCached]);
   
   const availableTabs = useMemo(() => [
     { id: 'main', label: 'Main', available: !!spriteSheets.main },
@@ -326,3 +389,5 @@ export function SpriteTestPanel({ onClose }: { onClose: () => void }) {
     </Dialog>
   );
 }
+
+export const SpriteTestPanel = SpriteTestPanelInner;

@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { Airplane, Helicopter, WorldRenderState, TILE_WIDTH, TILE_HEIGHT, PlaneType } from './types';
+import { Airplane, Helicopter, WorldRenderState, TILE_WIDTH, TILE_HEIGHT, PlaneType, ContrailParticle, RotorWashParticle } from './types';
 import {
   AIRPLANE_MIN_POPULATION,
   AIRPLANE_COLORS,
@@ -13,6 +13,219 @@ import {
 } from './constants';
 import { gridToScreen } from './utils';
 import { findAirports, findHeliports } from './gridFinders';
+
+// ============================================================================
+// PERFORMANCE OPTIMIZATIONS: Pre-computed constants and lookup tables
+// ============================================================================
+
+// Pre-computed constants to avoid repeated calculations
+const TILE_WIDTH_2 = TILE_WIDTH * 2;
+const TILE_HEIGHT_2 = TILE_HEIGHT * 2;
+const TWO_PI = Math.PI * 2;
+const HALF_PI = Math.PI / 2;
+const PI_OVER_4 = Math.PI / 4;
+const PI_OVER_6 = Math.PI / 6;
+
+// Speed multiplier lookup table (avoids conditional logic)
+const SPEED_MULTIPLIER_LUT: readonly number[] = [0, 1, 1.5, 2];
+
+// Pre-computed color indices for faster random selection
+const AIRPLANE_COLORS_LEN = AIRPLANE_COLORS.length;
+const HELICOPTER_COLORS_LEN = HELICOPTER_COLORS.length;
+const PLANE_TYPES_LEN = PLANE_TYPES.length;
+
+// ============================================================================
+// OBJECT POOLING: Reduces GC pressure by reusing objects
+// ============================================================================
+
+// Airplane object pool
+const airplanePool: Airplane[] = [];
+const MAX_AIRPLANE_POOL_SIZE = 100;
+
+// Helicopter object pool
+const helicopterPool: Helicopter[] = [];
+const MAX_HELICOPTER_POOL_SIZE = 80;
+
+// Contrail particle pool
+const contrailPool: ContrailParticle[] = [];
+const MAX_CONTRAIL_POOL_SIZE = 2000;
+
+// Rotor wash particle pool
+const rotorWashPool: RotorWashParticle[] = [];
+const MAX_ROTOR_WASH_POOL_SIZE = 1000;
+
+// Get or create airplane from pool
+function acquireAirplane(): Airplane {
+  if (airplanePool.length > 0) {
+    return airplanePool.pop()!;
+  }
+  // Create new airplane with default values (will be overwritten)
+  return {
+    id: 0,
+    x: 0,
+    y: 0,
+    angle: 0,
+    state: 'flying',
+    speed: 0,
+    altitude: 0,
+    targetAltitude: 0,
+    airportX: 0,
+    airportY: 0,
+    stateProgress: 0,
+    contrail: [],
+    lifeTime: 0,
+    color: '',
+    planeType: '737',
+  };
+}
+
+// Return airplane to pool
+function releaseAirplane(plane: Airplane): void {
+  if (airplanePool.length < MAX_AIRPLANE_POOL_SIZE) {
+    // Release contrail particles back to pool
+    const contrail = plane.contrail;
+    for (let i = 0, len = contrail.length; i < len; i++) {
+      if (contrailPool.length < MAX_CONTRAIL_POOL_SIZE) {
+        contrailPool.push(contrail[i]);
+      }
+    }
+    plane.contrail = [];
+    airplanePool.push(plane);
+  }
+}
+
+// Get or create helicopter from pool
+function acquireHelicopter(): Helicopter {
+  if (helicopterPool.length > 0) {
+    return helicopterPool.pop()!;
+  }
+  return {
+    id: 0,
+    x: 0,
+    y: 0,
+    angle: 0,
+    state: 'flying',
+    speed: 0,
+    altitude: 0,
+    targetAltitude: 0,
+    originX: 0,
+    originY: 0,
+    originType: 'hospital',
+    destX: 0,
+    destY: 0,
+    destType: 'hospital',
+    destScreenX: 0,
+    destScreenY: 0,
+    stateProgress: 0,
+    rotorWash: [],
+    rotorAngle: 0,
+    color: '',
+    searchlightAngle: 0,
+    searchlightSweepSpeed: 0,
+    searchlightSweepRange: 0,
+    searchlightBaseAngle: 0,
+  };
+}
+
+// Return helicopter to pool
+function releaseHelicopter(heli: Helicopter): void {
+  if (helicopterPool.length < MAX_HELICOPTER_POOL_SIZE) {
+    // Release rotor wash particles back to pool
+    const wash = heli.rotorWash;
+    for (let i = 0, len = wash.length; i < len; i++) {
+      if (rotorWashPool.length < MAX_ROTOR_WASH_POOL_SIZE) {
+        rotorWashPool.push(wash[i]);
+      }
+    }
+    heli.rotorWash = [];
+    helicopterPool.push(heli);
+  }
+}
+
+// Get or create contrail particle from pool
+function acquireContrailParticle(x: number, y: number): ContrailParticle {
+  if (contrailPool.length > 0) {
+    const p = contrailPool.pop()!;
+    p.x = x;
+    p.y = y;
+    p.age = 0;
+    p.opacity = 1;
+    return p;
+  }
+  return { x, y, age: 0, opacity: 1 };
+}
+
+// Get or create rotor wash particle from pool
+function acquireRotorWashParticle(x: number, y: number): RotorWashParticle {
+  if (rotorWashPool.length > 0) {
+    const p = rotorWashPool.pop()!;
+    p.x = x;
+    p.y = y;
+    p.age = 0;
+    p.opacity = 1;
+    return p;
+  }
+  return { x, y, age: 0, opacity: 1 };
+}
+
+// ============================================================================
+// CACHED CALCULATIONS: Airport/heliport screen position cache
+// ============================================================================
+
+interface ScreenPositionCache {
+  gridVersion: number;
+  airportPositions: Map<string, { centerX: number; centerY: number }>;
+  heliportPositions: Map<string, { centerX: number; centerY: number; size: number }>;
+}
+
+const screenPosCache: ScreenPositionCache = {
+  gridVersion: -1,
+  airportPositions: new Map(),
+  heliportPositions: new Map(),
+};
+
+// Get cached airport screen position
+function getAirportScreenPos(x: number, y: number, gridVersion: number): { centerX: number; centerY: number } {
+  if (screenPosCache.gridVersion !== gridVersion) {
+    screenPosCache.gridVersion = gridVersion;
+    screenPosCache.airportPositions.clear();
+    screenPosCache.heliportPositions.clear();
+  }
+
+  const key = `${x},${y}`;
+  let cached = screenPosCache.airportPositions.get(key);
+  if (!cached) {
+    const { screenX, screenY } = gridToScreen(x, y, 0, 0);
+    cached = {
+      centerX: screenX + TILE_WIDTH_2,
+      centerY: screenY + TILE_HEIGHT_2,
+    };
+    screenPosCache.airportPositions.set(key, cached);
+  }
+  return cached;
+}
+
+// Get cached heliport screen position
+function getHeliportScreenPos(x: number, y: number, size: number, gridVersion: number): { centerX: number; centerY: number } {
+  if (screenPosCache.gridVersion !== gridVersion) {
+    screenPosCache.gridVersion = gridVersion;
+    screenPosCache.airportPositions.clear();
+    screenPosCache.heliportPositions.clear();
+  }
+
+  const key = `${x},${y}`;
+  let cached = screenPosCache.heliportPositions.get(key);
+  if (!cached) {
+    const { screenX, screenY } = gridToScreen(x, y, 0, 0);
+    cached = {
+      centerX: screenX + TILE_WIDTH * size * 0.5,
+      centerY: screenY + TILE_HEIGHT * size * 0.5,
+      size,
+    };
+    screenPosCache.heliportPositions.set(key, cached);
+  }
+  return cached;
+}
 
 export interface AircraftSystemRefs {
   airplanesRef: React.MutableRefObject<Airplane[]>;

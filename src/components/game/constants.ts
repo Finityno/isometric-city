@@ -1,207 +1,284 @@
 import { BuildingType } from '@/types/game';
 import { CarDirection, DirectionMeta, TILE_WIDTH, TILE_HEIGHT } from './types';
 
-// Vehicle colors (duller/muted versions)
-export const CAR_COLORS = ['#d97777', '#d4a01f', '#2ba67a', '#4d84c8', '#9a6ac9'];
+// ============================================================================
+// OPTIMIZED CONSTANTS - Performance improvements applied:
+// 1. Frozen arrays/objects for JIT optimization and immutability
+// 2. Pre-computed derived values (angles, lengths, etc.)
+// 3. Typed tuples with const assertions for better type narrowing
+// 4. Sets for O(1) lookup operations
+// 5. Inlined numeric literals where beneficial
+// ============================================================================
 
-// Pedestrian appearance colors - includes lighter skin tones
-export const PEDESTRIAN_SKIN_COLORS = ['#ffe4c4', '#ffd5b8', '#ffc8a8', '#fdbf7e', '#e0ac69', '#c68642', '#8d5524', '#613318'];
-export const PEDESTRIAN_SHIRT_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6', '#ec4899', '#ffffff', '#1f2937'];
-export const PEDESTRIAN_PANTS_COLORS = ['#1f2937', '#374151', '#4b5563', '#1e3a8a', '#7c2d12', '#365314'];
-export const PEDESTRIAN_HAT_COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#f97316', '#8b5cf6', '#1f2937', '#ffffff'];
+// Pre-computed math constants (avoid repeated calculations)
+const PI = Math.PI;
+const HALF_PI = PI / 2;
+const THREE_HALF_PI = (3 * PI) / 2;
+const QUARTER_PI = PI / 4;
+const THREE_QUARTER_PI = (3 * PI) / 4;
+const HALF_TILE_WIDTH = TILE_WIDTH / 2;  // 32
+const HALF_TILE_HEIGHT = TILE_HEIGHT / 2; // 19.2
 
-// Pedestrian behavior constants
-export const PEDESTRIAN_BUILDING_ENTER_TIME = 0.8;  // Time to enter/exit building (seconds)
-export const PEDESTRIAN_MIN_ACTIVITY_TIME = 20.0;   // Minimum time at an activity
-export const PEDESTRIAN_MAX_ACTIVITY_TIME = 120.0;  // Maximum time at an activity
-export const PEDESTRIAN_BUILDING_MIN_TIME = 30.0;   // Minimum time inside buildings
-export const PEDESTRIAN_BUILDING_MAX_TIME = 240.0;  // Maximum time inside buildings
-export const PEDESTRIAN_SOCIAL_CHANCE = 0.02;       // Chance to stop and socialize (reduced for perf)
-export const PEDESTRIAN_SOCIAL_DURATION = 4.0;      // How long socializing lasts
-export const PEDESTRIAN_DOG_CHANCE = 0.05;          // Chance of walking a dog (reduced for perf)
-export const PEDESTRIAN_BAG_CHANCE = 0.15;          // Chance of carrying a bag
-export const PEDESTRIAN_HAT_CHANCE = 0.15;          // Chance of wearing a hat
-export const PEDESTRIAN_IDLE_CHANCE = 0.01;         // Chance to stop and idle briefly (reduced for perf)
+// Vehicle colors (duller/muted versions) - frozen tuple
+export const CAR_COLORS = Object.freeze(['#d97777', '#d4a01f', '#2ba67a', '#4d84c8', '#9a6ac9'] as const);
+export const CAR_COLORS_LENGTH = 5 as const;
+
+// Pedestrian appearance colors - frozen tuples with pre-computed lengths
+export const PEDESTRIAN_SKIN_COLORS = Object.freeze(['#ffe4c4', '#ffd5b8', '#ffc8a8', '#fdbf7e', '#e0ac69', '#c68642', '#8d5524', '#613318'] as const);
+export const PEDESTRIAN_SKIN_COLORS_LENGTH = 8 as const;
+export const PEDESTRIAN_SHIRT_COLORS = Object.freeze(['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6', '#ec4899', '#ffffff', '#1f2937'] as const);
+export const PEDESTRIAN_SHIRT_COLORS_LENGTH = 9 as const;
+export const PEDESTRIAN_PANTS_COLORS = Object.freeze(['#1f2937', '#374151', '#4b5563', '#1e3a8a', '#7c2d12', '#365314'] as const);
+export const PEDESTRIAN_PANTS_COLORS_LENGTH = 6 as const;
+export const PEDESTRIAN_HAT_COLORS = Object.freeze(['#ef4444', '#3b82f6', '#22c55e', '#f97316', '#8b5cf6', '#1f2937', '#ffffff'] as const);
+export const PEDESTRIAN_HAT_COLORS_LENGTH = 7 as const;
+
+// Pedestrian behavior constants - inlined for better optimization
+export const PEDESTRIAN_BUILDING_ENTER_TIME = 0.8 as const;
+export const PEDESTRIAN_MIN_ACTIVITY_TIME = 20.0 as const;
+export const PEDESTRIAN_MAX_ACTIVITY_TIME = 120.0 as const;
+export const PEDESTRIAN_ACTIVITY_TIME_RANGE = 100.0 as const; // Pre-computed: MAX - MIN
+export const PEDESTRIAN_BUILDING_MIN_TIME = 30.0 as const;
+export const PEDESTRIAN_BUILDING_MAX_TIME = 240.0 as const;
+export const PEDESTRIAN_BUILDING_TIME_RANGE = 210.0 as const; // Pre-computed: MAX - MIN
+export const PEDESTRIAN_SOCIAL_CHANCE = 0.02 as const;
+export const PEDESTRIAN_SOCIAL_DURATION = 4.0 as const;
+export const PEDESTRIAN_DOG_CHANCE = 0.05 as const;
+export const PEDESTRIAN_BAG_CHANCE = 0.15 as const;
+export const PEDESTRIAN_HAT_CHANCE = 0.15 as const;
+export const PEDESTRIAN_IDLE_CHANCE = 0.01 as const;
 
 // Beach/swimming pedestrian constants
-export const PEDESTRIAN_BEACH_CHANCE = 0.15;        // Chance a park-bound pedestrian goes to beach instead
-export const PEDESTRIAN_BEACH_MIN_TIME = 30.0;      // Minimum time at beach
-export const PEDESTRIAN_BEACH_MAX_TIME = 180.0;     // Maximum time at beach
-export const PEDESTRIAN_BEACH_SWIM_CHANCE = 0.6;    // Chance of swimming vs lying on mat
-export const PEDESTRIAN_MAT_COLORS = ['#e74c3c', '#3498db', '#2ecc71', '#f1c40f', '#9b59b6', '#e67e22', '#1abc9c', '#ff69b4'];
-export const MAX_BEACH_SWIMMERS_PER_TILE = 3;       // Max swimmers per water tile
-export const MAX_BEACH_MATS_PER_EDGE = 2;           // Max mats per beach edge
+export const PEDESTRIAN_BEACH_CHANCE = 0.15 as const;
+export const PEDESTRIAN_BEACH_MIN_TIME = 30.0 as const;
+export const PEDESTRIAN_BEACH_MAX_TIME = 180.0 as const;
+export const PEDESTRIAN_BEACH_TIME_RANGE = 150.0 as const; // Pre-computed: MAX - MIN
+export const PEDESTRIAN_BEACH_SWIM_CHANCE = 0.6 as const;
+export const PEDESTRIAN_MAT_COLORS = Object.freeze(['#e74c3c', '#3498db', '#2ecc71', '#f1c40f', '#9b59b6', '#e67e22', '#1abc9c', '#ff69b4'] as const);
+export const PEDESTRIAN_MAT_COLORS_LENGTH = 8 as const;
+export const MAX_BEACH_SWIMMERS_PER_TILE = 3 as const;
+export const MAX_BEACH_MATS_PER_EDGE = 2 as const;
 
 // Pedestrian performance limits
-export const PEDESTRIAN_MAX_COUNT = 800;            // Maximum pedestrians (hard cap)
-export const PEDESTRIAN_ROAD_TILE_DENSITY = 2.4;    // Target pedestrians per road tile (reduced from 3)
-export const PEDESTRIAN_SPAWN_BATCH_SIZE = 25;      // How many to try spawning at once
-export const PEDESTRIAN_SPAWN_INTERVAL = 0.03;      // Seconds between spawn batches
-export const PEDESTRIAN_UPDATE_SKIP_DISTANCE = 30;  // Skip detailed updates for pedestrians this far from view
+export const PEDESTRIAN_MAX_COUNT = 800 as const;
+export const PEDESTRIAN_ROAD_TILE_DENSITY = 2.4 as const;
+export const PEDESTRIAN_SPAWN_BATCH_SIZE = 25 as const;
+export const PEDESTRIAN_SPAWN_INTERVAL = 0.03 as const;
+export const PEDESTRIAN_UPDATE_SKIP_DISTANCE = 30 as const;
+export const PEDESTRIAN_UPDATE_SKIP_DISTANCE_SQ = 900 as const; // Pre-computed: 30^2 for distance checks
 
 // Zoom limits for camera
-export const ZOOM_MIN = 0.2;                      // Minimum zoom level (most zoomed out)
-export const ZOOM_MAX = 7;                        // Maximum zoom level (most zoomed in)
+export const ZOOM_MIN = 0.2 as const;
+export const ZOOM_MAX = 7 as const;
+export const ZOOM_RANGE = 6.8 as const; // Pre-computed: MAX - MIN
 
 // Zoom thresholds for rendering detail elements
-// Lower values = more zoomed out, higher values = more zoomed in required
-export const CAR_MIN_ZOOM = 0.4;                  // Desktop car threshold (cars hidden when very zoomed out)
-export const CAR_MIN_ZOOM_MOBILE = 0.45;          // Mobile car threshold (slightly higher for perf)
-export const PEDESTRIAN_MIN_ZOOM = 0.5;           // Desktop pedestrian threshold
-export const PEDESTRIAN_MIN_ZOOM_MOBILE = 0.55;   // Mobile pedestrian threshold (slightly higher for perf)
-export const TRAFFIC_LIGHT_MIN_ZOOM = 0.45;       // Traffic lights at intersections
-export const DIRECTION_ARROWS_MIN_ZOOM = 0.65;    // Directional arrows on merged roads
-export const MEDIAN_PLANTS_MIN_ZOOM = 0.55;       // Plants/shrubs on road medians
-export const LANE_MARKINGS_MIN_ZOOM = 0.5;        // Lane markings and road lines
-export const LANE_MARKINGS_MEDIAN_MIN_ZOOM = 0.6; // Median markings for avenues/highways
-export const SIDEWALK_MIN_ZOOM = 0.25;            // Sidewalks on road edges (desktop)
-export const SIDEWALK_MIN_ZOOM_MOBILE = 0.25;     // Sidewalks on mobile (lower = visible when more zoomed out)
-export const SKIP_SMALL_ELEMENTS_ZOOM_THRESHOLD = 0.5; // Desktop: hide boats/helis/smog during pan/zoom when below this
+export const CAR_MIN_ZOOM = 0.4 as const;
+export const CAR_MIN_ZOOM_MOBILE = 0.45 as const;
+export const PEDESTRIAN_MIN_ZOOM = 0.5 as const;
+export const PEDESTRIAN_MIN_ZOOM_MOBILE = 0.55 as const;
+export const TRAFFIC_LIGHT_MIN_ZOOM = 0.45 as const;
+export const DIRECTION_ARROWS_MIN_ZOOM = 0.65 as const;
+export const MEDIAN_PLANTS_MIN_ZOOM = 0.55 as const;
+export const LANE_MARKINGS_MIN_ZOOM = 0.5 as const;
+export const LANE_MARKINGS_MEDIAN_MIN_ZOOM = 0.6 as const;
+export const SIDEWALK_MIN_ZOOM = 0.25 as const;
+export const SIDEWALK_MIN_ZOOM_MOBILE = 0.25 as const;
+export const SKIP_SMALL_ELEMENTS_ZOOM_THRESHOLD = 0.5 as const;
 
 // Airplane system constants
-export const AIRPLANE_MIN_POPULATION = 2000; // Minimum population required for airplane activity
-export const AIRPLANE_COLORS = ['#ffffff', '#1e40af', '#dc2626', '#059669', '#7c3aed']; // Airline liveries (fallback)
-export const CONTRAIL_MAX_AGE = 3.0; // seconds
-export const CONTRAIL_SPAWN_INTERVAL = 0.02; // seconds between contrail particles
+export const AIRPLANE_MIN_POPULATION = 2000 as const;
+export const AIRPLANE_COLORS = Object.freeze(['#ffffff', '#1e40af', '#dc2626', '#059669', '#7c3aed'] as const);
+export const AIRPLANE_COLORS_LENGTH = 5 as const;
+export const CONTRAIL_MAX_AGE = 3.0 as const;
+export const CONTRAIL_SPAWN_INTERVAL = 0.02 as const;
 
 // Airplane sprite sheet configuration
-export const AIRPLANE_SPRITE_SRC = '/assets/sprites_red_water_new_planes.png';
-export const AIRPLANE_SPRITE_COLS = 5; // 5 columns per row
-export const AIRPLANE_SPRITE_ROWS = 6; // 6 rows total
-// Plane types by row (0-indexed): 737, 777, 747, a380, seaplane, g650
-export const PLANE_TYPE_ROWS: Record<string, number> = {
+export const AIRPLANE_SPRITE_SRC = '/assets/sprites_red_water_new_planes.png' as const;
+export const AIRPLANE_SPRITE_COLS = 5 as const;
+export const AIRPLANE_SPRITE_ROWS = 6 as const;
+
+// Plane types by row - frozen Map for O(1) lookup
+export const PLANE_TYPE_ROWS_MAP = Object.freeze(new Map<string, number>([
+  ['737', 0],
+  ['777', 1],
+  ['747', 2],
+  ['a380', 3],
+  ['seaplane', 4],
+  ['g650', 5],
+]));
+// Keep original for compatibility but freeze it
+export const PLANE_TYPE_ROWS: Readonly<Record<string, number>> = Object.freeze({
   '737': 0,
   '777': 1,
   '747': 2,
   'a380': 3,
-  'seaplane': 4, // Row 4 is the seaplane
+  'seaplane': 4,
   'g650': 5,
-};
-// Available plane types (weighted toward smaller planes for variety)
-export const PLANE_TYPES: Array<'737' | '777' | '747' | 'a380' | 'g650'> = ['737', '737', '737', '777', '777', '747', 'g650'];
-// Column mapping for each direction
-// Col 0: SW (South West), Col 1: NE (North East), Col 2: W (West), Col 3: N (North top-down), Col 4: unused
-// For opposite directions, mirror the sprite appropriately:
-// - W→E: horizontal flip (mirrorX)
-// - N→S: vertical flip (mirrorY)
-// - SE: use NE sprite (col 1) with vertical flip
-// - NW: use SW sprite (col 0) with vertical flip
-// baseAngle = the angle the sprite visually faces; rotationOffset = planeAngle - baseAngle
-export const PLANE_DIRECTION_COLS: Record<string, { col: number; mirrorX: boolean; mirrorY: boolean; baseAngle: number }> = {
-  // Original sprites - baseAngle is what direction the sprite is drawn facing
-  'sw': { col: 0, mirrorX: false, mirrorY: false, baseAngle: (3 * Math.PI) / 4 + 0.26 },  // ~150° - South West (col 0)
-  'ne': { col: 1, mirrorX: false, mirrorY: false, baseAngle: -Math.PI / 4 + 0.17 },        // ~-35° - North East (col 1)
-  'w': { col: 2, mirrorX: false, mirrorY: false, baseAngle: Math.PI },                    // 180° - West (col 2)
-  'n': { col: 3, mirrorX: false, mirrorY: false, baseAngle: (3 * Math.PI) / 2 },          // 270° - North top-down (col 3)
-  // Derived directions through mirroring
-  'se': { col: 0, mirrorX: true, mirrorY: false, baseAngle: Math.PI / 4 - 0.26 },         // SW mirrored horizontally = SE
-  'nw': { col: 1, mirrorX: false, mirrorY: true, baseAngle: Math.PI / 4 - 0.26 },         // NE mirrored vertically then rotated = NW (~30°)
-  'e': { col: 2, mirrorX: true, mirrorY: false, baseAngle: 0 },                           // 0° - East (W mirrored horizontally)
-  's': { col: 3, mirrorX: false, mirrorY: true, baseAngle: Math.PI / 2 },                 // 90° - South (N mirrored vertically)
-};
+});
 
-// Direction overrides for planes that cannot use col 1 (NE): seaplane and g650
-// Use col 3 (N) instead
-export const COL1_OVERRIDE_PLANE_TYPES = ['seaplane', 'g650'];
-export const COL1_DIRECTION_OVERRIDES: Record<string, { col: number; mirrorX: boolean; mirrorY: boolean; baseAngle: number }> = {
-  'ne': { col: 3, mirrorX: true, mirrorY: false, baseAngle: -Math.PI / 4 - 0.69 },        // Use N sprite rotated for NE
-  'se': { col: 3, mirrorX: true, mirrorY: true, baseAngle: (3 * Math.PI) / 4 - 0.78 },    // Use N sprite rotated for SE (30° clockwise)
-  'nw': { col: 3, mirrorX: false, mirrorY: false, baseAngle: (3 * Math.PI) / 2 },         // Use N sprite (facing 270°) without mirroring, rotation handles NW
-};
-// Plane scale factors by type (larger planes are bigger)
-// Scaled down 20% from previous values
-export const PLANE_SCALES: Record<string, number> = {
+// Available plane types - frozen tuple with pre-computed length
+export const PLANE_TYPES = Object.freeze(['737', '737', '737', '777', '777', '747', 'g650'] as const);
+export const PLANE_TYPES_LENGTH = 7 as const;
+
+// Direction data type for pre-computed values
+type PlaneDirectionData = Readonly<{
+  col: number;
+  mirrorX: boolean;
+  mirrorY: boolean;
+  baseAngle: number;
+}>;
+
+// Pre-computed direction data (angles calculated at module load)
+const SW_BASE_ANGLE = THREE_QUARTER_PI + 0.26;  // ~2.6116
+const NE_BASE_ANGLE = -QUARTER_PI + 0.17;        // ~-0.6154
+const SE_BASE_ANGLE = QUARTER_PI - 0.26;         // ~0.5254
+const NW_BASE_ANGLE = QUARTER_PI - 0.26;         // ~0.5254
+
+export const PLANE_DIRECTION_COLS: Readonly<Record<string, PlaneDirectionData>> = Object.freeze({
+  'sw': Object.freeze({ col: 0, mirrorX: false, mirrorY: false, baseAngle: SW_BASE_ANGLE }),
+  'ne': Object.freeze({ col: 1, mirrorX: false, mirrorY: false, baseAngle: NE_BASE_ANGLE }),
+  'w': Object.freeze({ col: 2, mirrorX: false, mirrorY: false, baseAngle: PI }),
+  'n': Object.freeze({ col: 3, mirrorX: false, mirrorY: false, baseAngle: THREE_HALF_PI }),
+  'se': Object.freeze({ col: 0, mirrorX: true, mirrorY: false, baseAngle: SE_BASE_ANGLE }),
+  'nw': Object.freeze({ col: 1, mirrorX: false, mirrorY: true, baseAngle: NW_BASE_ANGLE }),
+  'e': Object.freeze({ col: 2, mirrorX: true, mirrorY: false, baseAngle: 0 }),
+  's': Object.freeze({ col: 3, mirrorX: false, mirrorY: true, baseAngle: HALF_PI }),
+});
+
+// O(1) lookup Set for col1 override plane types
+export const COL1_OVERRIDE_PLANE_TYPES_SET = Object.freeze(new Set(['seaplane', 'g650']));
+// Keep array for compatibility
+export const COL1_OVERRIDE_PLANE_TYPES = Object.freeze(['seaplane', 'g650'] as const);
+
+// Pre-computed override angles
+const COL1_NE_OVERRIDE_ANGLE = -QUARTER_PI - 0.69;       // ~-1.4754
+const COL1_SE_OVERRIDE_ANGLE = THREE_QUARTER_PI - 0.78;  // ~1.5754
+
+export const COL1_DIRECTION_OVERRIDES: Readonly<Record<string, PlaneDirectionData>> = Object.freeze({
+  'ne': Object.freeze({ col: 3, mirrorX: true, mirrorY: false, baseAngle: COL1_NE_OVERRIDE_ANGLE }),
+  'se': Object.freeze({ col: 3, mirrorX: true, mirrorY: true, baseAngle: COL1_SE_OVERRIDE_ANGLE }),
+  'nw': Object.freeze({ col: 3, mirrorX: false, mirrorY: false, baseAngle: THREE_HALF_PI }),
+});
+
+// Plane scale factors - frozen with Map for O(1) lookup
+export const PLANE_SCALES_MAP = Object.freeze(new Map<string, number>([
+  ['737', 0.152],
+  ['777', 0.184],
+  ['747', 0.196],
+  ['a380', 0.224],
+  ['g650', 0.112],
+  ['seaplane', 0.112],
+]));
+export const PLANE_SCALES: Readonly<Record<string, number>> = Object.freeze({
   '737': 0.152,
   '777': 0.184,
   '747': 0.196,
   'a380': 0.224,
   'g650': 0.112,
-  'seaplane': 0.112, // Scaled down 30%
-};
+  'seaplane': 0.112,
+});
 
 // Seaplane system constants
-export const SEAPLANE_MIN_POPULATION = 3000; // Minimum population for seaplanes
-export const SEAPLANE_MIN_BAY_SIZE = 12; // Minimum water tiles for a bay to support seaplanes
-export const SEAPLANE_COLORS = ['#ffffff', '#1e40af', '#dc2626', '#f97316', '#059669']; // Seaplane liveries
-export const MAX_SEAPLANES = 25; // Maximum seaplanes in the city
-export const SEAPLANE_SPAWN_INTERVAL_MIN = 3; // Minimum seconds between spawns
-export const SEAPLANE_SPAWN_INTERVAL_MAX = 8; // Maximum seconds between spawns
-export const SEAPLANE_TAXI_TIME_MIN = 3; // Minimum seconds taxiing on water before takeoff
-export const SEAPLANE_TAXI_TIME_MAX = 8; // Maximum seconds taxiing
-export const SEAPLANE_FLIGHT_TIME_MIN = 20; // Minimum flight time in seconds
-export const SEAPLANE_FLIGHT_TIME_MAX = 40; // Maximum flight time
-export const SEAPLANE_WATER_SPEED = 20; // Speed when taxiing on water (px/sec)
-export const SEAPLANE_TAKEOFF_SPEED = 60; // Speed during takeoff run
-export const SEAPLANE_FLIGHT_SPEED_MIN = 70; // Minimum cruising speed
-export const SEAPLANE_FLIGHT_SPEED_MAX = 100; // Maximum cruising speed
-export const SEAPLANE_MIN_ZOOM = 0.3; // Minimum zoom to show seaplanes
+export const SEAPLANE_MIN_POPULATION = 3000 as const;
+export const SEAPLANE_MIN_BAY_SIZE = 12 as const;
+export const SEAPLANE_COLORS = Object.freeze(['#ffffff', '#1e40af', '#dc2626', '#f97316', '#059669'] as const);
+export const SEAPLANE_COLORS_LENGTH = 5 as const;
+export const MAX_SEAPLANES = 25 as const;
+export const SEAPLANE_SPAWN_INTERVAL_MIN = 3 as const;
+export const SEAPLANE_SPAWN_INTERVAL_MAX = 8 as const;
+export const SEAPLANE_SPAWN_INTERVAL_RANGE = 5 as const; // Pre-computed: MAX - MIN
+export const SEAPLANE_TAXI_TIME_MIN = 3 as const;
+export const SEAPLANE_TAXI_TIME_MAX = 8 as const;
+export const SEAPLANE_TAXI_TIME_RANGE = 5 as const; // Pre-computed
+export const SEAPLANE_FLIGHT_TIME_MIN = 20 as const;
+export const SEAPLANE_FLIGHT_TIME_MAX = 40 as const;
+export const SEAPLANE_FLIGHT_TIME_RANGE = 20 as const; // Pre-computed
+export const SEAPLANE_WATER_SPEED = 20 as const;
+export const SEAPLANE_TAKEOFF_SPEED = 60 as const;
+export const SEAPLANE_FLIGHT_SPEED_MIN = 70 as const;
+export const SEAPLANE_FLIGHT_SPEED_MAX = 100 as const;
+export const SEAPLANE_FLIGHT_SPEED_RANGE = 30 as const; // Pre-computed
+export const SEAPLANE_MIN_ZOOM = 0.3 as const;
 
 // Helicopter system constants
-export const HELICOPTER_MIN_POPULATION = 3000; // Minimum population required for helicopter activity
-export const HELICOPTER_COLORS = ['#dc2626', '#ffffff', '#1e3a8a', '#f97316', '#059669']; // Red cross, white, navy, orange, green
-export const ROTOR_WASH_MAX_AGE = 1.0; // seconds - shorter than plane contrails
-export const ROTOR_WASH_SPAWN_INTERVAL = 0.04; // seconds between rotor wash particles
+export const HELICOPTER_MIN_POPULATION = 3000 as const;
+export const HELICOPTER_COLORS = Object.freeze(['#dc2626', '#ffffff', '#1e3a8a', '#f97316', '#059669'] as const);
+export const HELICOPTER_COLORS_LENGTH = 5 as const;
+export const ROTOR_WASH_MAX_AGE = 1.0 as const;
+export const ROTOR_WASH_SPAWN_INTERVAL = 0.04 as const;
 
 // Water asset path
-export const WATER_ASSET_PATH = '/assets/water.png';
+export const WATER_ASSET_PATH = '/assets/water.png' as const;
 
 // Boat system constants
-export const BOAT_COLORS = ['#ffffff', '#1e3a5f', '#8b4513', '#2f4f4f', '#c41e3a', '#1e90ff']; // Various boat hull colors
-export const BOAT_MIN_ZOOM = 0.3; // Minimum zoom level to show boats
-export const WAKE_MIN_ZOOM_MOBILE = 0.45; // Minimum zoom level to show wakes on mobile (matches traffic lights threshold)
-export const BOATS_PER_DOCK = 1.5; // Number of boats per marina/pier
-export const MAX_BOATS = 12; // Maximum total boats in the city
-export const WAKE_MAX_AGE = 2.0; // seconds - how long wake particles last
-export const WAKE_SPAWN_INTERVAL = 0.03; // seconds between wake particles
+export const BOAT_COLORS = Object.freeze(['#ffffff', '#1e3a5f', '#8b4513', '#2f4f4f', '#c41e3a', '#1e90ff'] as const);
+export const BOAT_COLORS_LENGTH = 6 as const;
+export const BOAT_MIN_ZOOM = 0.3 as const;
+export const WAKE_MIN_ZOOM_MOBILE = 0.45 as const;
+export const BOATS_PER_DOCK = 1.5 as const;
+export const MAX_BOATS = 12 as const;
+export const WAKE_MAX_AGE = 2.0 as const;
+export const WAKE_SPAWN_INTERVAL = 0.03 as const;
 
 // Barge system constants (ocean cargo ships)
-export const BARGE_COLORS = ['#2c3e50', '#34495e', '#7f8c8d', '#c0392b', '#27ae60', '#2980b9']; // Industrial ship colors
-export const BARGE_MIN_ZOOM = 0.25; // Minimum zoom level to show barges (slightly lower than boats)
-export const BARGE_SPEED_MIN = 8; // Minimum speed (pixels/second) - slower than boats
-export const BARGE_SPEED_MAX = 12; // Maximum speed (pixels/second)
-export const MAX_BARGES = 4; // Maximum barges in the city at once
-export const BARGE_SPAWN_INTERVAL_MIN = 8; // Minimum seconds between barge spawns
-export const BARGE_SPAWN_INTERVAL_MAX = 20; // Maximum seconds between barge spawns
-export const BARGE_DOCK_TIME_MIN = 8; // Minimum seconds docked at marina
-export const BARGE_DOCK_TIME_MAX = 15; // Maximum seconds docked at marina
-export const BARGE_CARGO_VALUE_MIN = 100; // Minimum cargo value (adds to city income per delivery)
-export const BARGE_CARGO_VALUE_MAX = 350; // Maximum cargo value (makes ocean marinas worthwhile)
-export const BARGE_WAKE_SPAWN_INTERVAL = 0.05; // Slower wake spawn than boats (larger vessel)
+export const BARGE_COLORS = Object.freeze(['#2c3e50', '#34495e', '#7f8c8d', '#c0392b', '#27ae60', '#2980b9'] as const);
+export const BARGE_COLORS_LENGTH = 6 as const;
+export const BARGE_MIN_ZOOM = 0.25 as const;
+export const BARGE_SPEED_MIN = 8 as const;
+export const BARGE_SPEED_MAX = 12 as const;
+export const BARGE_SPEED_RANGE = 4 as const; // Pre-computed
+export const MAX_BARGES = 4 as const;
+export const BARGE_SPAWN_INTERVAL_MIN = 8 as const;
+export const BARGE_SPAWN_INTERVAL_MAX = 20 as const;
+export const BARGE_SPAWN_INTERVAL_RANGE = 12 as const; // Pre-computed
+export const BARGE_DOCK_TIME_MIN = 8 as const;
+export const BARGE_DOCK_TIME_MAX = 15 as const;
+export const BARGE_DOCK_TIME_RANGE = 7 as const; // Pre-computed
+export const BARGE_CARGO_VALUE_MIN = 100 as const;
+export const BARGE_CARGO_VALUE_MAX = 350 as const;
+export const BARGE_CARGO_VALUE_RANGE = 250 as const; // Pre-computed
+export const BARGE_WAKE_SPAWN_INTERVAL = 0.05 as const;
 
-// Factory smog system constants
-export const SMOG_BUILDINGS: BuildingType[] = ['factory_medium', 'factory_large'];
-export const SMOG_PARTICLE_MAX_AGE = 8.0; // seconds - how long smog particles last
-export const SMOG_PARTICLE_MAX_AGE_MOBILE = 5.0; // seconds - shorter on mobile for performance
-export const SMOG_SPAWN_INTERVAL_MEDIUM = 0.4; // seconds between particles for medium factory
-export const SMOG_SPAWN_INTERVAL_LARGE = 0.2; // seconds between particles for large factory
-export const SMOG_SPAWN_INTERVAL_MOBILE_MULTIPLIER = 2.0; // Spawn less frequently on mobile
-export const SMOG_DRIFT_SPEED = 8; // pixels per second horizontal drift
-export const SMOG_RISE_SPEED = 12; // pixels per second upward drift
-export const SMOG_MAX_ZOOM = 1.2; // Zoom level above which smog starts to fade
-export const SMOG_FADE_ZOOM = 1.8; // Zoom level at which smog is fully invisible
-export const SMOG_BASE_OPACITY = 0.25; // Base opacity of smog particles
-export const SMOG_PARTICLE_SIZE_MIN = 8; // Minimum particle size
-export const SMOG_PARTICLE_SIZE_MAX = 20; // Maximum particle size
-export const SMOG_PARTICLE_GROWTH = 0.5; // How much particles grow per second
-export const SMOG_MAX_PARTICLES_PER_FACTORY = 25; // Maximum particles per factory to prevent memory issues
-export const SMOG_MAX_PARTICLES_PER_FACTORY_MOBILE = 12; // Lower limit on mobile
+// Factory smog system constants - Set for O(1) building type lookup
+export const SMOG_BUILDINGS_SET: ReadonlySet<BuildingType> = Object.freeze(new Set<BuildingType>(['factory_medium', 'factory_large']));
+export const SMOG_BUILDINGS: readonly BuildingType[] = Object.freeze(['factory_medium', 'factory_large']);
+export const SMOG_PARTICLE_MAX_AGE = 8.0 as const;
+export const SMOG_PARTICLE_MAX_AGE_MOBILE = 5.0 as const;
+export const SMOG_SPAWN_INTERVAL_MEDIUM = 0.4 as const;
+export const SMOG_SPAWN_INTERVAL_LARGE = 0.2 as const;
+export const SMOG_SPAWN_INTERVAL_MOBILE_MULTIPLIER = 2.0 as const;
+export const SMOG_DRIFT_SPEED = 8 as const;
+export const SMOG_RISE_SPEED = 12 as const;
+export const SMOG_MAX_ZOOM = 1.2 as const;
+export const SMOG_FADE_ZOOM = 1.8 as const;
+export const SMOG_ZOOM_FADE_RANGE = 0.6 as const; // Pre-computed: FADE - MAX
+export const SMOG_BASE_OPACITY = 0.25 as const;
+export const SMOG_PARTICLE_SIZE_MIN = 8 as const;
+export const SMOG_PARTICLE_SIZE_MAX = 20 as const;
+export const SMOG_PARTICLE_SIZE_RANGE = 12 as const; // Pre-computed
+export const SMOG_PARTICLE_GROWTH = 0.5 as const;
+export const SMOG_MAX_PARTICLES_PER_FACTORY = 25 as const;
+export const SMOG_MAX_PARTICLES_PER_FACTORY_MOBILE = 12 as const;
 
 // Train smoke constants (freight locomotives only)
-export const TRAIN_SMOKE_PARTICLE_MAX_AGE = 1.8; // seconds - short-lived compact puffs
-export const TRAIN_SMOKE_SPAWN_INTERVAL = 0.15; // seconds between puffs
-export const TRAIN_SMOKE_SPAWN_INTERVAL_MOBILE = 0.3; // Less frequent on mobile
-export const TRAIN_SMOKE_DRIFT_SPEED = 8; // pixels per second horizontal drift (slower)
-export const TRAIN_SMOKE_RISE_SPEED = 18; // pixels per second upward drift
-export const TRAIN_SMOKE_BASE_OPACITY = 0.5; // Higher opacity for compact puffs
-export const TRAIN_SMOKE_PARTICLE_SIZE_MIN = 2; // Tiny puffs
-export const TRAIN_SMOKE_PARTICLE_SIZE_MAX = 4; // Small max size
-export const TRAIN_SMOKE_PARTICLE_GROWTH = 0.8; // Slow growth - stays compact
-export const TRAIN_SMOKE_MAX_PARTICLES = 12; // Max particles per train
-export const TRAIN_SMOKE_MAX_PARTICLES_MOBILE = 6;
+export const TRAIN_SMOKE_PARTICLE_MAX_AGE = 1.8 as const;
+export const TRAIN_SMOKE_SPAWN_INTERVAL = 0.15 as const;
+export const TRAIN_SMOKE_SPAWN_INTERVAL_MOBILE = 0.3 as const;
+export const TRAIN_SMOKE_DRIFT_SPEED = 8 as const;
+export const TRAIN_SMOKE_RISE_SPEED = 18 as const;
+export const TRAIN_SMOKE_BASE_OPACITY = 0.5 as const;
+export const TRAIN_SMOKE_PARTICLE_SIZE_MIN = 2 as const;
+export const TRAIN_SMOKE_PARTICLE_SIZE_MAX = 4 as const;
+export const TRAIN_SMOKE_PARTICLE_SIZE_RANGE = 2 as const; // Pre-computed
+export const TRAIN_SMOKE_PARTICLE_GROWTH = 0.8 as const;
+export const TRAIN_SMOKE_MAX_PARTICLES = 12 as const;
+export const TRAIN_SMOKE_MAX_PARTICLES_MOBILE = 6 as const;
 
-// Firework system constants
-export const FIREWORK_BUILDINGS: BuildingType[] = ['baseball_stadium', 'amusement_park', 'marina_docks_small', 'pier_large'];
-export const FIREWORK_COLORS = [
+// Firework system constants - Set for O(1) building type lookup
+export const FIREWORK_BUILDINGS_SET: ReadonlySet<BuildingType> = Object.freeze(new Set<BuildingType>(['baseball_stadium', 'amusement_park', 'marina_docks_small', 'pier_large']));
+export const FIREWORK_BUILDINGS: readonly BuildingType[] = Object.freeze(['baseball_stadium', 'amusement_park', 'marina_docks_small', 'pier_large']);
+export const FIREWORK_COLORS = Object.freeze([
   '#ff4444', '#ff6b6b', // Reds
   '#44ff44', '#6bff6b', // Greens
   '#4444ff', '#6b6bff', // Blues
@@ -210,48 +287,91 @@ export const FIREWORK_COLORS = [
   '#44ffff', '#6bffff', // Cyans
   '#ff8844', '#ffaa44', // Oranges
   '#ffffff', '#ffffee', // Whites
-];
-export const FIREWORK_PARTICLE_COUNT = 40; // Particles per explosion
-export const FIREWORK_PARTICLE_SPEED = 120; // Initial particle velocity
-export const FIREWORK_PARTICLE_MAX_AGE = 1.5; // seconds - how long particles last
-export const FIREWORK_LAUNCH_SPEED = 180; // pixels per second upward
-export const FIREWORK_SPAWN_INTERVAL_MIN = 0.3; // seconds between firework launches
-export const FIREWORK_SPAWN_INTERVAL_MAX = 1.2; // seconds between firework launches
-export const FIREWORK_SHOW_DURATION = 45; // seconds - how long a firework show lasts
-export const FIREWORK_SHOW_CHANCE = 0.35; // 35% chance of fireworks on any given night
+] as const);
+export const FIREWORK_COLORS_LENGTH = 16 as const;
+export const FIREWORK_PARTICLE_COUNT = 40 as const;
+export const FIREWORK_PARTICLE_SPEED = 120 as const;
+export const FIREWORK_PARTICLE_MAX_AGE = 1.5 as const;
+export const FIREWORK_LAUNCH_SPEED = 180 as const;
+export const FIREWORK_SPAWN_INTERVAL_MIN = 0.3 as const;
+export const FIREWORK_SPAWN_INTERVAL_MAX = 1.2 as const;
+export const FIREWORK_SPAWN_INTERVAL_RANGE = 0.9 as const; // Pre-computed
+export const FIREWORK_SHOW_DURATION = 45 as const;
+export const FIREWORK_SHOW_CHANCE = 0.35 as const;
 
-// Direction metadata helpers
-function createDirectionMeta(step: { x: number; y: number }, vec: { dx: number; dy: number }): DirectionMeta {
-  const length = Math.hypot(vec.dx, vec.dy) || 1;
-  return {
-    step,
-    vec,
-    angle: Math.atan2(vec.dy, vec.dx),
-    normal: { nx: -vec.dy / length, ny: vec.dx / length },
-  };
-}
+// Pre-computed direction metadata (all math done at module load)
+// Pre-computed vector lengths for normals
+const DIAGONAL_VEC_LENGTH = Math.hypot(HALF_TILE_WIDTH, HALF_TILE_HEIGHT); // ~37.47
 
-export const DIRECTION_META: Record<CarDirection, DirectionMeta> = {
-  north: createDirectionMeta({ x: -1, y: 0 }, { dx: -TILE_WIDTH / 2, dy: -TILE_HEIGHT / 2 }),
-  east: createDirectionMeta({ x: 0, y: -1 }, { dx: TILE_WIDTH / 2, dy: -TILE_HEIGHT / 2 }),
-  south: createDirectionMeta({ x: 1, y: 0 }, { dx: TILE_WIDTH / 2, dy: TILE_HEIGHT / 2 }),
-  west: createDirectionMeta({ x: 0, y: 1 }, { dx: -TILE_WIDTH / 2, dy: TILE_HEIGHT / 2 }),
-};
+const NORTH_VEC_DX = -HALF_TILE_WIDTH;  // -32
+const NORTH_VEC_DY = -HALF_TILE_HEIGHT; // -19.2
+const NORTH_ANGLE = Math.atan2(NORTH_VEC_DY, NORTH_VEC_DX); // ~-2.6016
+const NORTH_NORMAL_NX = -NORTH_VEC_DY / DIAGONAL_VEC_LENGTH;
+const NORTH_NORMAL_NY = NORTH_VEC_DX / DIAGONAL_VEC_LENGTH;
 
-export const OPPOSITE_DIRECTION: Record<CarDirection, CarDirection> = {
+const EAST_VEC_DX = HALF_TILE_WIDTH;   // 32
+const EAST_VEC_DY = -HALF_TILE_HEIGHT; // -19.2
+const EAST_ANGLE = Math.atan2(EAST_VEC_DY, EAST_VEC_DX); // ~-0.5404
+const EAST_NORMAL_NX = -EAST_VEC_DY / DIAGONAL_VEC_LENGTH;
+const EAST_NORMAL_NY = EAST_VEC_DX / DIAGONAL_VEC_LENGTH;
+
+const SOUTH_VEC_DX = HALF_TILE_WIDTH;  // 32
+const SOUTH_VEC_DY = HALF_TILE_HEIGHT; // 19.2
+const SOUTH_ANGLE = Math.atan2(SOUTH_VEC_DY, SOUTH_VEC_DX); // ~0.5404
+const SOUTH_NORMAL_NX = -SOUTH_VEC_DY / DIAGONAL_VEC_LENGTH;
+const SOUTH_NORMAL_NY = SOUTH_VEC_DX / DIAGONAL_VEC_LENGTH;
+
+const WEST_VEC_DX = -HALF_TILE_WIDTH; // -32
+const WEST_VEC_DY = HALF_TILE_HEIGHT; // 19.2
+const WEST_ANGLE = Math.atan2(WEST_VEC_DY, WEST_VEC_DX); // ~2.6016
+const WEST_NORMAL_NX = -WEST_VEC_DY / DIAGONAL_VEC_LENGTH;
+const WEST_NORMAL_NY = WEST_VEC_DX / DIAGONAL_VEC_LENGTH;
+
+// Fully pre-computed and frozen direction metadata
+export const DIRECTION_META: Readonly<Record<CarDirection, DirectionMeta>> = Object.freeze({
+  north: Object.freeze({
+    step: Object.freeze({ x: -1, y: 0 }),
+    vec: Object.freeze({ dx: NORTH_VEC_DX, dy: NORTH_VEC_DY }),
+    angle: NORTH_ANGLE,
+    normal: Object.freeze({ nx: NORTH_NORMAL_NX, ny: NORTH_NORMAL_NY }),
+  }),
+  east: Object.freeze({
+    step: Object.freeze({ x: 0, y: -1 }),
+    vec: Object.freeze({ dx: EAST_VEC_DX, dy: EAST_VEC_DY }),
+    angle: EAST_ANGLE,
+    normal: Object.freeze({ nx: EAST_NORMAL_NX, ny: EAST_NORMAL_NY }),
+  }),
+  south: Object.freeze({
+    step: Object.freeze({ x: 1, y: 0 }),
+    vec: Object.freeze({ dx: SOUTH_VEC_DX, dy: SOUTH_VEC_DY }),
+    angle: SOUTH_ANGLE,
+    normal: Object.freeze({ nx: SOUTH_NORMAL_NX, ny: SOUTH_NORMAL_NY }),
+  }),
+  west: Object.freeze({
+    step: Object.freeze({ x: 0, y: 1 }),
+    vec: Object.freeze({ dx: WEST_VEC_DX, dy: WEST_VEC_DY }),
+    angle: WEST_ANGLE,
+    normal: Object.freeze({ nx: WEST_NORMAL_NX, ny: WEST_NORMAL_NY }),
+  }),
+});
+
+export const OPPOSITE_DIRECTION: Readonly<Record<CarDirection, CarDirection>> = Object.freeze({
   north: 'south',
   east: 'west',
   south: 'north',
   west: 'east',
-};
+});
 
 // Traffic light timing constants (faster cycle)
-export const TRAFFIC_LIGHT_GREEN_DURATION = 3.0;   // Seconds
-export const TRAFFIC_LIGHT_YELLOW_DURATION = 0.8;  // Seconds
-export const TRAFFIC_LIGHT_CYCLE = 7.6;            // Full cycle time
+export const TRAFFIC_LIGHT_GREEN_DURATION = 3.0 as const;
+export const TRAFFIC_LIGHT_YELLOW_DURATION = 0.8 as const;
+export const TRAFFIC_LIGHT_CYCLE = 7.6 as const;
+// Pre-computed phase boundaries for traffic light state checks
+export const TRAFFIC_LIGHT_YELLOW_START = 3.0 as const; // GREEN_DURATION
+export const TRAFFIC_LIGHT_RED_START = 3.8 as const;     // GREEN + YELLOW
 
 // Train system constants
-export const TRAIN_MIN_ZOOM = 0.35;               // Minimum zoom to show trains
-export const TRAIN_SPAWN_INTERVAL = 3.0;          // Seconds between train spawn attempts
-export const MIN_RAIL_TILES_FOR_TRAINS = 10;      // Minimum rail tiles needed
-export const MAX_TRAINS = 35;                      // Maximum trains in city
+export const TRAIN_MIN_ZOOM = 0.35 as const;
+export const TRAIN_SPAWN_INTERVAL = 3.0 as const;
+export const MIN_RAIL_TILES_FOR_TRAINS = 10 as const;
+export const MAX_TRAINS = 35 as const;

@@ -1,10 +1,57 @@
 /**
  * Drawing utilities for isometric tile rendering.
  * Extracted from Game.tsx for better code organization.
+ *
+ * PERFORMANCE OPTIMIZATIONS:
+ * - Pre-computed constants at module level
+ * - Reusable coordinate arrays to avoid object allocations
+ * - Inlined calculations for hot paths
+ * - Integer coordinates for pixel-perfect rendering
+ * - Minimized canvas state changes
  */
 
 import { Tile, ZoneType } from '@/types/game';
 import { TILE_WIDTH, TILE_HEIGHT } from './types';
+
+// ============================================================================
+// Pre-computed Constants (avoid calculations in render loops)
+// ============================================================================
+
+/** Half tile dimensions - pre-computed for performance */
+const HALF_TILE_WIDTH = TILE_WIDTH * 0.5;
+const HALF_TILE_HEIGHT = TILE_HEIGHT * 0.5;
+
+/** Pre-computed sqrt(2)/2 for diagonal calculations */
+const SQRT2_OVER_2 = 0.7071067811865476; // Math.SQRT2 / 2
+
+/** Pre-computed 2*PI for arc drawing */
+const TWO_PI = 6.283185307179586; // Math.PI * 2
+
+// ============================================================================
+// Reusable Coordinate Storage (avoid object allocation in hot paths)
+// ============================================================================
+
+/**
+ * Reusable corner coordinate arrays - avoid allocating new objects every frame.
+ * Format: [topX, topY, rightX, rightY, bottomX, bottomY, leftX, leftY]
+ */
+const _corners: number[] = new Array(8);
+
+/**
+ * Get diamond corners as a reusable array. IMPORTANT: Do not store reference,
+ * values are overwritten on next call.
+ */
+function getDiamondCornersArray(x: number, y: number): number[] {
+  _corners[0] = (x + HALF_TILE_WIDTH) | 0;  // topX - bitwise OR for fast floor
+  _corners[1] = y | 0;                        // topY
+  _corners[2] = (x + TILE_WIDTH) | 0;         // rightX
+  _corners[3] = (y + HALF_TILE_HEIGHT) | 0;   // rightY
+  _corners[4] = (x + HALF_TILE_WIDTH) | 0;    // bottomX
+  _corners[5] = (y + TILE_HEIGHT) | 0;        // bottomY
+  _corners[6] = x | 0;                        // leftX
+  _corners[7] = (y + HALF_TILE_HEIGHT) | 0;   // leftY
+  return _corners;
+}
 
 // ============================================================================
 // Types
@@ -95,22 +142,45 @@ export const FOUNDATION_COLORS: TileColorScheme = {
 // Geometry Helpers
 // ============================================================================
 
-/** Calculate the four corner points of an isometric diamond */
+/**
+ * Calculate the four corner points of an isometric diamond.
+ * NOTE: This allocates a new object - use getDiamondCornersArray() in hot paths.
+ */
 export function getDiamondCorners(x: number, y: number, w = TILE_WIDTH, h = TILE_HEIGHT): DiamondCorners {
+  const halfW = w * 0.5;
+  const halfH = h * 0.5;
   return {
-    top: { x: x + w / 2, y },
-    right: { x: x + w, y: y + h / 2 },
-    bottom: { x: x + w / 2, y: y + h },
-    left: { x, y: y + h / 2 },
+    top: { x: x + halfW, y },
+    right: { x: x + w, y: y + halfH },
+    bottom: { x: x + halfW, y: y + h },
+    left: { x, y: y + halfH },
   };
 }
 
-/** Inward direction vectors for each beach edge (pointing toward tile center) */
+/**
+ * Inward direction vectors for each beach edge (pointing toward tile center).
+ * Using pre-computed SQRT2_OVER_2 for performance.
+ * Format: [northDx, northDy, eastDx, eastDy, southDx, southDy, westDx, westDy]
+ */
+const BEACH_INWARD_FLAT: number[] = [
+  SQRT2_OVER_2, SQRT2_OVER_2,    // north: Points center-right and down
+  -SQRT2_OVER_2, SQRT2_OVER_2,   // east: Points center-left and down
+  -SQRT2_OVER_2, -SQRT2_OVER_2,  // south: Points center-left and up
+  SQRT2_OVER_2, -SQRT2_OVER_2,   // west: Points center-right and up
+];
+
+/** Index constants for BEACH_INWARD_FLAT array */
+const BEACH_NORTH = 0;
+const BEACH_EAST = 2;
+const BEACH_SOUTH = 4;
+const BEACH_WEST = 6;
+
+/** Legacy object format - kept for backward compatibility with less performance-critical code */
 const BEACH_INWARD_VECTORS: Record<BeachEdge, { dx: number; dy: number }> = {
-  north: { dx: 0.707, dy: 0.707 },   // Points center-right and down
-  east: { dx: -0.707, dy: 0.707 },   // Points center-left and down
-  south: { dx: -0.707, dy: -0.707 }, // Points center-left and up
-  west: { dx: 0.707, dy: -0.707 },   // Points center-right and up
+  north: { dx: SQRT2_OVER_2, dy: SQRT2_OVER_2 },
+  east: { dx: -SQRT2_OVER_2, dy: SQRT2_OVER_2 },
+  south: { dx: -SQRT2_OVER_2, dy: -SQRT2_OVER_2 },
+  west: { dx: SQRT2_OVER_2, dy: -SQRT2_OVER_2 },
 };
 
 // ============================================================================

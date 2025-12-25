@@ -1,5 +1,5 @@
-import { useCallback } from 'react';
-import { Seaplane, WorldRenderState, TILE_WIDTH, TILE_HEIGHT, WakeParticle } from './types';
+import { useCallback, useRef } from 'react';
+import { Seaplane, WorldRenderState, TILE_WIDTH, TILE_HEIGHT, WakeParticle, ContrailParticle } from './types';
 import {
   SEAPLANE_MIN_POPULATION,
   SEAPLANE_MIN_BAY_SIZE,
@@ -23,6 +23,77 @@ import {
 } from './constants';
 import { findBays, getRandomBayTile, isOverWater, BayInfo } from './gridFinders';
 
+// Pre-computed constants to avoid repeated calculations
+const TWO_PI = Math.PI * 2;
+const HALF_PI = Math.PI / 2;
+const QUARTER_PI = Math.PI / 4;
+const SIXTH_PI = Math.PI / 6;
+const INV_TWO_PI = 1 / TWO_PI;
+
+// Pre-computed spawn interval range
+const SPAWN_INTERVAL_RANGE = SEAPLANE_SPAWN_INTERVAL_MAX - SEAPLANE_SPAWN_INTERVAL_MIN;
+const TAXI_TIME_RANGE = SEAPLANE_TAXI_TIME_MAX - SEAPLANE_TAXI_TIME_MIN;
+const FLIGHT_TIME_RANGE = SEAPLANE_FLIGHT_TIME_MAX - SEAPLANE_FLIGHT_TIME_MIN;
+const FLIGHT_SPEED_RANGE = SEAPLANE_FLIGHT_SPEED_MAX - SEAPLANE_FLIGHT_SPEED_MIN;
+const SEAPLANE_COLORS_LENGTH = SEAPLANE_COLORS.length;
+
+// Speed multiplier lookup table (avoids conditional branches)
+const SPEED_MULTIPLIERS = new Float32Array([1, 1, 1.5, 2]);
+
+// Object pools for particles to reduce GC pressure
+const contrailPool: ContrailParticle[] = [];
+const wakePool: WakeParticle[] = [];
+const MAX_POOL_SIZE = 500;
+
+function getContrailParticle(x: number, y: number): ContrailParticle {
+  const particle = contrailPool.pop();
+  if (particle) {
+    particle.x = x;
+    particle.y = y;
+    particle.age = 0;
+    particle.opacity = 1;
+    return particle;
+  }
+  return { x, y, age: 0, opacity: 1 };
+}
+
+function getWakeParticle(x: number, y: number): WakeParticle {
+  const particle = wakePool.pop();
+  if (particle) {
+    particle.x = x;
+    particle.y = y;
+    particle.age = 0;
+    particle.opacity = 1;
+    return particle;
+  }
+  return { x, y, age: 0, opacity: 1 };
+}
+
+function recycleContrailParticle(particle: ContrailParticle): void {
+  if (contrailPool.length < MAX_POOL_SIZE) {
+    contrailPool.push(particle);
+  }
+}
+
+function recycleWakeParticle(particle: WakeParticle): void {
+  if (wakePool.length < MAX_POOL_SIZE) {
+    wakePool.push(particle);
+  }
+}
+
+// Inline angle normalization (faster than function call with modulo)
+function normalizeAngle(angle: number): number {
+  // Fast normalization using bitwise floor for positive angles
+  if (angle >= 0 && angle < TWO_PI) return angle;
+  angle = angle - TWO_PI * Math.floor(angle * INV_TWO_PI);
+  return angle < 0 ? angle + TWO_PI : angle;
+}
+
+// Inline clamp function
+function clamp(value: number, min: number, max: number): number {
+  return value < min ? min : value > max ? max : value;
+}
+
 export interface SeaplaneSystemRefs {
   seaplanesRef: React.MutableRefObject<Seaplane[]>;
   seaplaneIdRef: React.MutableRefObject<number>;
@@ -36,6 +107,12 @@ export interface SeaplaneSystemState {
   isMobile: boolean;
 }
 
+// Cached bay info with grid version tracking
+interface CachedBays {
+  bays: BayInfo[];
+  gridVersion: number;
+}
+
 export function useSeaplaneSystem(
   refs: SeaplaneSystemRefs,
   systemState: SeaplaneSystemState
@@ -43,11 +120,40 @@ export function useSeaplaneSystem(
   const { seaplanesRef, seaplaneIdRef, seaplaneSpawnTimerRef } = refs;
   const { worldStateRef, gridVersionRef, cachedPopulationRef, isMobile } = systemState;
 
-  // Find bays callback
+  // Cache for bay calculations (expensive operation)
+  const cachedBaysRef = useRef<CachedBays>({ bays: [], gridVersion: -1 });
+
+  // Pre-computed mobile-specific values (avoid recalculating each frame)
+  const mobileContrailMaxAge = 0.8;
+  const mobileContrailSpawnInterval = 0.06;
+  const mobileWakeMaxAge = 0.6;
+  const mobileWakeSpawnInterval = 0.08;
+  const mobileTakeoffWakeSpawnInterval = 0.04;
+
+  // Desktop values
+  const desktopContrailMaxAge = CONTRAIL_MAX_AGE;
+  const desktopContrailSpawnInterval = CONTRAIL_SPAWN_INTERVAL;
+  const desktopWakeMaxAge = WAKE_MAX_AGE;
+  const desktopWakeSpawnInterval = WAKE_SPAWN_INTERVAL;
+  const desktopTakeoffWakeSpawnInterval = WAKE_SPAWN_INTERVAL / 2;
+
+  // Find bays callback with caching
   const findBaysCallback = useCallback((): BayInfo[] => {
+    const currentGridVersion = gridVersionRef.current;
+    const cached = cachedBaysRef.current;
+
+    // Return cached bays if grid hasn't changed
+    if (cached.gridVersion === currentGridVersion) {
+      return cached.bays;
+    }
+
     const { grid: currentGrid, gridSize: currentGridSize } = worldStateRef.current;
-    return findBays(currentGrid, currentGridSize, SEAPLANE_MIN_BAY_SIZE);
-  }, [worldStateRef]);
+    const bays = findBays(currentGrid, currentGridSize, SEAPLANE_MIN_BAY_SIZE);
+
+    // Update cache
+    cachedBaysRef.current = { bays, gridVersion: currentGridVersion };
+    return bays;
+  }, [worldStateRef, gridVersionRef]);
 
   // Check if screen position is over water callback
   const isOverWaterCallback = useCallback((screenX: number, screenY: number): boolean => {

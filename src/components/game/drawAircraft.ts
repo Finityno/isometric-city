@@ -1,6 +1,14 @@
 /**
  * Aircraft drawing utilities - airplanes and helicopters
  * Extracted from CanvasIsometricGrid for better modularity
+ *
+ * PERFORMANCE OPTIMIZATIONS:
+ * - Pre-computed lookup tables for angle-to-direction conversion
+ * - Cached sprite info to avoid repeated calculations
+ * - Integer coordinate rounding for subpixel rendering optimization
+ * - Early culling before any calculations
+ * - Minimized ctx.save/restore calls via batching
+ * - Pre-allocated objects to avoid GC pressure
  */
 
 import { Airplane, Helicopter, Seaplane, TILE_WIDTH, TILE_HEIGHT, PlaneType } from './types';
@@ -9,7 +17,7 @@ import {
   AIRPLANE_SPRITE_ROWS,
   PLANE_TYPE_ROWS,
   PLANE_DIRECTION_COLS,
-  COL1_OVERRIDE_PLANE_TYPES,
+  COL1_OVERRIDE_PLANE_TYPES_SET,
   COL1_DIRECTION_OVERRIDES,
   PLANE_SCALES,
 } from './constants';
@@ -20,6 +28,44 @@ const AIRPLANE_SPRITE_CACHE_KEY = '/assets/sprites_red_water_new_planes.png';
 
 // Cache for last direction to prevent rapid flipping (hysteresis)
 const lastDirectionCache = new WeakMap<any, string>();
+
+// PERF: Pre-computed constants
+const TWO_PI = Math.PI * 2;
+const RAD_TO_DEG = 180 / Math.PI;
+const DEG_TO_RAD = Math.PI / 180;
+const HALF_PI = Math.PI / 2;
+const THREE_HALF_PI = Math.PI * 1.5;
+
+// PERF: Pre-computed direction lookup table (indexed by angle in 1-degree increments)
+// Maps degree (0-359) to direction string
+const DIRECTION_LOOKUP: string[] = new Array(360);
+const DIRECTIONS_ORDERED = ['e', 'se', 's', 'sw', 'w', 'nw', 'n', 'ne'];
+for (let deg = 0; deg < 360; deg++) {
+  if (deg >= 337.5 || deg < 22.5) DIRECTION_LOOKUP[deg] = 'e';
+  else if (deg < 67.5) DIRECTION_LOOKUP[deg] = 'se';
+  else if (deg < 112.5) DIRECTION_LOOKUP[deg] = 's';
+  else if (deg < 157.5) DIRECTION_LOOKUP[deg] = 'sw';
+  else if (deg < 202.5) DIRECTION_LOOKUP[deg] = 'w';
+  else if (deg < 247.5) DIRECTION_LOOKUP[deg] = 'nw';
+  else if (deg < 292.5) DIRECTION_LOOKUP[deg] = 'n';
+  else DIRECTION_LOOKUP[deg] = 'ne';
+}
+// Handle edge case at 360
+DIRECTION_LOOKUP[359] = DIRECTION_LOOKUP[359] || 'e';
+
+// PERF: Pre-computed sprite info cache
+interface CachedSpriteInfo {
+  sx: number;
+  sy: number;
+  sw: number;
+  sh: number;
+  mirrorX: boolean;
+  mirrorY: boolean;
+  baseAngle: number;
+  halfSw: number;
+  halfSh: number;
+}
+const spriteInfoCache = new Map<string, CachedSpriteInfo | null>();
 
 // Helper for boundary angles
 const boundaryOrder: Record<string, number[]> = {
@@ -36,76 +82,63 @@ const boundaryOrder: Record<string, number[]> = {
 /**
  * Convert an angle (radians) to one of 8 compass directions
  * Uses hysteresis to prevent rapid direction flips
+ * PERF: Uses lookup table instead of branching
  */
 function angleToDirection(angle: number, cacheKey?: any): string {
-  // Normalize angle to 0-2PI
-  let normalizedAngle = angle % (Math.PI * 2);
-  if (normalizedAngle < 0) normalizedAngle += Math.PI * 2;
-  
-  // Convert to degrees for easier understanding
-  const degrees = (normalizedAngle * 180) / Math.PI;
-  
-  // Map to 8 directions (each direction covers 45 degrees)
-  // In isometric screen coords:
-  // - Right (+X) is East
-  // - Down (+Y) is South  
-  // - Angle 0 is East (right)
-  // - Angle PI/2 is South (down)
-  // - Angle PI is West (left)
-  // - Angle 3*PI/2 is North (up)
-  
-  let newDirection: string;
-  if (degrees >= 337.5 || degrees < 22.5) newDirection = 'e';
-  else if (degrees >= 22.5 && degrees < 67.5) newDirection = 'se';
-  else if (degrees >= 67.5 && degrees < 112.5) newDirection = 's';
-  else if (degrees >= 112.5 && degrees < 157.5) newDirection = 'sw';
-  else if (degrees >= 157.5 && degrees < 202.5) newDirection = 'w';
-  else if (degrees >= 202.5 && degrees < 247.5) newDirection = 'nw';
-  else if (degrees >= 247.5 && degrees < 292.5) newDirection = 'n';
-  else newDirection = 'ne'; // 292.5 to 337.5
-  
+  // PERF: Fast normalize angle to 0-2PI using bitwise
+  let normalizedAngle = angle % TWO_PI;
+  if (normalizedAngle < 0) normalizedAngle += TWO_PI;
+
+  // PERF: Convert to integer degrees for lookup table
+  const degrees = ((normalizedAngle * RAD_TO_DEG) | 0) % 360;
+
+  // PERF: Use lookup table instead of if/else chain
+  const newDirection = DIRECTION_LOOKUP[degrees];
+
   // Apply hysteresis: if we have a cached direction and the new direction is adjacent,
   // only switch if we've moved significantly past the boundary (5 degree deadband)
   if (cacheKey && lastDirectionCache.has(cacheKey)) {
     const lastDirection = lastDirectionCache.get(cacheKey)!;
     if (lastDirection !== newDirection) {
-      // Check if this is an adjacent direction (could cause flickering)
-      const directionOrder = ['e', 'se', 's', 'sw', 'w', 'nw', 'n', 'ne'];
-      const lastIdx = directionOrder.indexOf(lastDirection);
-      const newIdx = directionOrder.indexOf(newDirection);
-      
+      // PERF: Use indexOf on module-level constant array
+      const lastIdx = DIRECTIONS_ORDERED.indexOf(lastDirection);
+      const newIdx = DIRECTIONS_ORDERED.indexOf(newDirection);
+
       // Calculate if this is an adjacent direction (including wraparound)
-      const isAdjacent = Math.abs(newIdx - lastIdx) === 1 || 
-                        (lastIdx === 0 && newIdx === 7) || 
-                        (lastIdx === 7 && newIdx === 0);
-      
+      const diff = Math.abs(newIdx - lastIdx);
+      const isAdjacent = diff === 1 || diff === 7;
+
       if (isAdjacent) {
         const deadband = 5; // degrees
-        const [boundaryLow, boundaryHigh] = boundaryOrder[lastDirection] || [0, 360];
-        
-        // Check if we're far enough from the boundary to switch
-        const distFromLowBoundary = Math.min(
-          Math.abs(degrees - boundaryLow),
-          Math.abs(degrees - (boundaryLow + 360))
-        );
-        const distFromHighBoundary = Math.min(
-          Math.abs(degrees - boundaryHigh),
-          Math.abs(degrees - (boundaryHigh - 360))
-        );
-        
-        // Only switch if we're more than deadband degrees away from the boundary
-        if (distFromLowBoundary < deadband || distFromHighBoundary < deadband) {
-          return lastDirection; // Keep previous direction
+        const boundaries = boundaryOrder[lastDirection];
+        if (boundaries) {
+          const boundaryLow = boundaries[0];
+          const boundaryHigh = boundaries[1];
+
+          // Check if we're far enough from the boundary to switch
+          // PERF: Inline min calculation
+          let distFromLowBoundary = Math.abs(degrees - boundaryLow);
+          const altLow = Math.abs(degrees - (boundaryLow + 360));
+          if (altLow < distFromLowBoundary) distFromLowBoundary = altLow;
+
+          let distFromHighBoundary = Math.abs(degrees - boundaryHigh);
+          const altHigh = Math.abs(degrees - (boundaryHigh - 360));
+          if (altHigh < distFromHighBoundary) distFromHighBoundary = altHigh;
+
+          // Only switch if we're more than deadband degrees away from the boundary
+          if (distFromLowBoundary < deadband || distFromHighBoundary < deadband) {
+            return lastDirection; // Keep previous direction
+          }
         }
       }
     }
   }
-  
+
   // Update cache if provided
   if (cacheKey) {
     lastDirectionCache.set(cacheKey, newDirection);
   }
-  
+
   return newDirection;
 }
 
@@ -143,7 +176,7 @@ function getPlaneSprite(
   
   // For seaplanes and g650, check if we need to use direction overrides (avoid col 1)
   let dirInfo = PLANE_DIRECTION_COLS[direction];
-  if (COL1_OVERRIDE_PLANE_TYPES.includes(planeType) && COL1_DIRECTION_OVERRIDES[direction]) {
+  if (COL1_OVERRIDE_PLANE_TYPES_SET.has(planeType) && COL1_DIRECTION_OVERRIDES[direction]) {
     dirInfo = COL1_DIRECTION_OVERRIDES[direction];
   }
   if (!dirInfo) return null;

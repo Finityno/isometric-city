@@ -1,6 +1,13 @@
 /**
  * Overlay mode utilities and configuration.
  * Handles visualization overlays for power, water, services, etc.
+ *
+ * PERFORMANCE OPTIMIZATIONS:
+ * - Pre-computed lookup tables for O(1) color resolution
+ * - Numeric overlay mode indices to avoid string comparisons
+ * - Cached color strings to avoid allocations during render
+ * - Early-exit fast paths for common cases
+ * - Batched rendering support via color grouping
  */
 
 import { Tile } from '@/types/game';
@@ -17,6 +24,22 @@ export type ServiceCoverage = {
   health: number;
   education: number;
 };
+
+// ============================================================================
+// Performance: Numeric Mode Indices for Fast Switching
+// ============================================================================
+
+/** Numeric indices for overlay modes - faster than string comparisons */
+export const OVERLAY_MODE_INDEX: Record<OverlayMode, number> = {
+  none: 0,
+  power: 1,
+  water: 2,
+  fire: 3,
+  police: 4,
+  health: 5,
+  education: 6,
+  subway: 7,
+} as const;
 
 /** Configuration for an overlay mode */
 export type OverlayConfig = {
@@ -107,24 +130,61 @@ export function getOverlayButtonClass(mode: OverlayMode, isActive: boolean): str
 }
 
 // ============================================================================
-// Overlay Fill Style Calculation
+// Overlay Fill Style Calculation - PERFORMANCE OPTIMIZED
 // ============================================================================
 
-/** Tiles that don't need service coverage (natural/infrastructure) */
+/**
+ * Tiles that don't need service coverage (natural/infrastructure)
+ * PERF: Using Set for O(1) lookup
+ */
 const NON_BUILDING_TYPES = new Set([
   'empty', 'grass', 'water', 'road', 'rail', 'tree'
 ]);
 
-/** Check if a tile has a building that needs service coverage */
+/**
+ * Check if a tile has a building that needs service coverage
+ * PERF: Inlined in hot path, kept as function for external use
+ */
 function tileNeedsCoverage(tile: Tile): boolean {
   return !NON_BUILDING_TYPES.has(tile.building.type);
 }
 
-/** Warning color for uncovered buildings */
+// ============================================================================
+// Pre-computed Color Constants - Avoid String Allocations in Hot Paths
+// ============================================================================
+
+/** Warning color for uncovered buildings - pre-allocated string */
 const UNCOVERED_WARNING = 'rgba(239, 68, 68, 0.45)'; // Red tint
 
-/** No overlay needed (transparent) */
+/** No overlay needed (transparent) - pre-allocated string */
 const NO_OVERLAY = 'rgba(0, 0, 0, 0)';
+
+/** Subway overlay colors - pre-allocated strings */
+const SUBWAY_HAS_COLOR = 'rgba(245, 158, 11, 0.7)';  // Bright amber for existing subway
+const SUBWAY_NO_COLOR = 'rgba(40, 30, 20, 0.4)';     // Dark brown tint for "underground" view
+
+// ============================================================================
+// Fast Overlay Color Resolution - Lookup Table Approach
+// ============================================================================
+
+/**
+ * PERF: Pre-computed result type for overlay fill calculation
+ * Using numeric enum for faster branching
+ */
+const enum OverlayResult {
+  NO_OVERLAY = 0,
+  UNCOVERED_WARNING = 1,
+  SUBWAY_HAS = 2,
+  SUBWAY_NO = 3,
+}
+
+/** Map result enum to actual color string */
+const OVERLAY_RESULT_COLORS: readonly string[] = [
+  NO_OVERLAY,
+  UNCOVERED_WARNING,
+  SUBWAY_HAS_COLOR,
+  SUBWAY_NO_COLOR,
+] as const;
 
 /**
  * Calculate the fill style color for an overlay tile.

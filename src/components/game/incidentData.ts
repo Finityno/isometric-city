@@ -1,96 +1,119 @@
 /**
  * Incident Data - Crime types, fire types, and their descriptions
  * Comprehensive incident system for city simulation
+ *
+ * Performance optimizations:
+ * - Pre-computed weighted arrays for O(1) random selection
+ * - Frozen objects for immutability
+ * - Const assertions for literal types
+ * - Pre-computed lookup Maps for O(1) access
  */
+
+// ============================================================================
+// SEVERITY TYPES (const for better tree-shaking)
+// ============================================================================
+
+export const CRIME_SEVERITY = {
+  LOW: 'low',
+  MEDIUM: 'medium',
+  HIGH: 'high',
+  CRITICAL: 'critical',
+} as const;
+
+export const FIRE_SEVERITY = {
+  MINOR: 'minor',
+  MODERATE: 'moderate',
+  MAJOR: 'major',
+  CATASTROPHIC: 'catastrophic',
+} as const;
+
+export type CrimeSeverity = (typeof CRIME_SEVERITY)[keyof typeof CRIME_SEVERITY];
+export type FireSeverity = (typeof FIRE_SEVERITY)[keyof typeof FIRE_SEVERITY];
 
 // ============================================================================
 // CRIME TYPES
 // ============================================================================
 
-export type CrimeType =
+export const CRIME_TYPES = [
   // Violent Crimes
-  | 'armed_robbery'
-  | 'mugging'
-  | 'assault'
-  | 'aggravated_assault'
-  | 'carjacking'
-  | 'kidnapping'
-  | 'hostage_situation'
-  | 'gang_violence'
-  | 'shooting'
-  | 'stabbing'
-  
+  'armed_robbery',
+  'mugging',
+  'assault',
+  'aggravated_assault',
+  'carjacking',
+  'kidnapping',
+  'hostage_situation',
+  'gang_violence',
+  'shooting',
+  'stabbing',
   // Property Crimes
-  | 'burglary'
-  | 'home_invasion'
-  | 'commercial_burglary'
-  | 'car_theft'
-  | 'bike_theft'
-  | 'package_theft'
-  | 'shoplifting'
-  | 'smash_and_grab'
-  | 'warehouse_theft'
-  | 'construction_theft'
-  
+  'burglary',
+  'home_invasion',
+  'commercial_burglary',
+  'car_theft',
+  'bike_theft',
+  'package_theft',
+  'shoplifting',
+  'smash_and_grab',
+  'warehouse_theft',
+  'construction_theft',
   // Financial Crimes
-  | 'fraud'
-  | 'identity_theft'
-  | 'credit_card_fraud'
-  | 'insurance_fraud'
-  | 'embezzlement'
-  | 'counterfeiting'
-  
+  'fraud',
+  'identity_theft',
+  'credit_card_fraud',
+  'insurance_fraud',
+  'embezzlement',
+  'counterfeiting',
   // Public Order
-  | 'disturbance'
-  | 'public_intoxication'
-  | 'disorderly_conduct'
-  | 'noise_complaint'
-  | 'loitering'
-  | 'trespassing'
-  | 'public_urination'
-  | 'street_racing'
-  | 'illegal_dumping'
-  
+  'disturbance',
+  'public_intoxication',
+  'disorderly_conduct',
+  'noise_complaint',
+  'loitering',
+  'trespassing',
+  'public_urination',
+  'street_racing',
+  'illegal_dumping',
   // Drug Related
-  | 'drug_dealing'
-  | 'drug_possession'
-  | 'illegal_dispensary'
-  | 'public_drug_use'
-  
+  'drug_dealing',
+  'drug_possession',
+  'illegal_dispensary',
+  'public_drug_use',
   // Traffic & Vehicle
-  | 'hit_and_run'
-  | 'dui'
-  | 'reckless_driving'
-  | 'traffic_violation'
-  | 'parking_violation'
-  | 'illegal_street_vendor'
-  
+  'hit_and_run',
+  'dui',
+  'reckless_driving',
+  'traffic_violation',
+  'parking_violation',
+  'illegal_street_vendor',
   // Vandalism & Destruction
-  | 'vandalism'
-  | 'graffiti'
-  | 'arson_attempt'
-  | 'property_damage'
-  | 'broken_windows'
-  
+  'vandalism',
+  'graffiti',
+  'arson_attempt',
+  'property_damage',
+  'broken_windows',
   // Other
-  | 'suspicious_activity'
-  | 'prowler'
-  | 'stalking'
-  | 'domestic_disturbance'
-  | 'animal_cruelty'
-  | 'illegal_gambling'
-  | 'prostitution'
-  | 'solicitation';
+  'suspicious_activity',
+  'prowler',
+  'stalking',
+  'domestic_disturbance',
+  'animal_cruelty',
+  'illegal_gambling',
+  'prostitution',
+  'solicitation',
+] as const;
+
+export type CrimeType = (typeof CRIME_TYPES)[number];
 
 export interface CrimeData {
-  name: string;
-  description: string;
-  severity: 'low' | 'medium' | 'high' | 'critical';
-  duration: number; // seconds before incident expires if unresponded
-  weight: number; // relative spawn frequency (higher = more common)
+  readonly name: string;
+  readonly description: string;
+  readonly severity: CrimeSeverity;
+  readonly duration: number; // seconds before incident expires if unresponded
+  readonly weight: number; // relative spawn frequency (higher = more common)
 }
 
-export const CRIME_DATA: Record<CrimeType, CrimeData> = {
+const CRIME_DATA_INTERNAL: Record<CrimeType, CrimeData> = {
   // Violent Crimes (critical/high severity, longer duration)
   armed_robbery: {
     name: 'Armed Robbery',
@@ -514,127 +537,165 @@ export const CRIME_DATA: Record<CrimeType, CrimeData> = {
   },
 };
 
-// Get all crime types as an array
-export const CRIME_TYPES = Object.keys(CRIME_DATA) as CrimeType[];
+// Freeze the crime data for immutability (prevents accidental mutations, enables V8 optimizations)
+export const CRIME_DATA: Readonly<Record<CrimeType, CrimeData>> =
+  Object.freeze(CRIME_DATA_INTERNAL);
 
-// Get a weighted random crime type
-export function getRandomCrimeType(): CrimeType {
-  const totalWeight = CRIME_TYPES.reduce((sum, type) => sum + CRIME_DATA[type].weight, 0);
-  let random = Math.random() * totalWeight;
-  
-  for (const type of CRIME_TYPES) {
-    random -= CRIME_DATA[type].weight;
-    if (random <= 0) {
-      return type;
+// Pre-compute cumulative weights for O(1) binary search random selection
+interface WeightedEntry<T> {
+  readonly type: T;
+  readonly cumulativeWeight: number;
+}
+
+function buildCumulativeWeights<T extends string>(
+  types: readonly T[],
+  getData: (type: T) => { weight: number }
+): { entries: readonly WeightedEntry<T>[]; totalWeight: number } {
+  let cumulative = 0;
+  const entries: WeightedEntry<T>[] = new Array(types.length);
+
+  for (let i = 0; i < types.length; i++) {
+    cumulative += getData(types[i]).weight;
+    entries[i] = { type: types[i], cumulativeWeight: cumulative };
+  }
+
+  return { entries: Object.freeze(entries), totalWeight: cumulative };
+}
+
+const CRIME_WEIGHTS = buildCumulativeWeights(CRIME_TYPES, (t) => CRIME_DATA[t]);
+
+// Binary search for weighted random selection - O(log n) instead of O(n)
+function binarySearchWeight<T>(
+  entries: readonly WeightedEntry<T>[],
+  target: number
+): T {
+  let low = 0;
+  let high = entries.length - 1;
+
+  while (low < high) {
+    const mid = (low + high) >>> 1; // Bitwise floor division
+    if (entries[mid].cumulativeWeight < target) {
+      low = mid + 1;
+    } else {
+      high = mid;
     }
   }
-  
-  return CRIME_TYPES[0];
+
+  return entries[low].type;
+}
+
+// Get a weighted random crime type - O(log n) via binary search
+export function getRandomCrimeType(): CrimeType {
+  const random = Math.random() * CRIME_WEIGHTS.totalWeight;
+  return binarySearchWeight(CRIME_WEIGHTS.entries, random);
 }
 
 // ============================================================================
 // FIRE TYPES
 // ============================================================================
 
-export type FireType =
-  | 'structural'
-  | 'electrical'
-  | 'kitchen'
-  | 'industrial'
-  | 'chemical'
-  | 'vehicle'
-  | 'brush'
-  | 'explosion'
-  | 'gas_leak'
-  | 'arson';
+export const FIRE_TYPES = [
+  'structural',
+  'electrical',
+  'kitchen',
+  'industrial',
+  'chemical',
+  'vehicle',
+  'brush',
+  'explosion',
+  'gas_leak',
+  'arson',
+] as const;
+
+export type FireType = (typeof FIRE_TYPES)[number];
 
 export interface FireData {
-  name: string;
-  description: string;
-  severity: 'minor' | 'moderate' | 'major' | 'catastrophic';
+  readonly name: string;
+  readonly description: string;
+  readonly severity: FireSeverity;
+  readonly weight: number; // For weighted random selection
 }
 
-export const FIRE_DATA: Record<FireType, FireData> = {
+const FIRE_DATA_INTERNAL: Record<FireType, FireData> = {
   structural: {
     name: 'Structure Fire',
-    description: 'Flames spreading through building. Multiple floors at risk. Evacuate immediately.',
+    description:
+      'Flames spreading through building. Multiple floors at risk. Evacuate immediately.',
     severity: 'major',
+    weight: 25,
   },
   electrical: {
     name: 'Electrical Fire',
-    description: 'Electrical system overload. Smoke billowing from outlets. Power lines sparking.',
+    description:
+      'Electrical system overload. Smoke billowing from outlets. Power lines sparking.',
     severity: 'moderate',
+    weight: 20,
   },
   kitchen: {
     name: 'Kitchen Fire',
-    description: 'Cooking fire out of control. Grease flames spreading rapidly. Ventilation compromised.',
+    description:
+      'Cooking fire out of control. Grease flames spreading rapidly. Ventilation compromised.',
     severity: 'moderate',
+    weight: 15,
   },
   industrial: {
     name: 'Industrial Fire',
-    description: 'Factory blaze with heavy smoke. Hazardous materials may be involved. Wide perimeter needed.',
+    description:
+      'Factory blaze with heavy smoke. Hazardous materials may be involved. Wide perimeter needed.',
     severity: 'catastrophic',
+    weight: 8,
   },
   chemical: {
     name: 'Chemical Fire',
-    description: 'Toxic chemical combustion. Dangerous fumes spreading. Specialized response required.',
+    description:
+      'Toxic chemical combustion. Dangerous fumes spreading. Specialized response required.',
     severity: 'catastrophic',
+    weight: 3,
   },
   vehicle: {
     name: 'Vehicle Fire',
     description: 'Car engulfed in flames. Risk of fuel tank explosion. Keep clear.',
     severity: 'minor',
+    weight: 10,
   },
   brush: {
     name: 'Brush Fire',
     description: 'Vegetation fire spreading with wind. Nearby structures threatened.',
     severity: 'moderate',
+    weight: 5,
   },
   explosion: {
     name: 'Explosion',
-    description: 'Building rocked by blast. Structural integrity compromised. Possible casualties.',
+    description:
+      'Building rocked by blast. Structural integrity compromised. Possible casualties.',
     severity: 'catastrophic',
+    weight: 2,
   },
   gas_leak: {
     name: 'Gas Fire',
     description: 'Natural gas ignited. Continuous flame from leak. Shut-off valve needed.',
     severity: 'major',
+    weight: 7,
   },
   arson: {
     name: 'Arson Fire',
     description: 'Deliberately set fire detected. Accelerant used. Fire spreading rapidly.',
     severity: 'major',
+    weight: 5,
   },
 };
 
-export const FIRE_TYPES = Object.keys(FIRE_DATA) as FireType[];
+// Freeze the fire data for immutability
+export const FIRE_DATA: Readonly<Record<FireType, FireData>> =
+  Object.freeze(FIRE_DATA_INTERNAL);
 
-// Get a random fire type (weighted toward structural/electrical for realism)
+// Pre-compute fire weights for O(log n) random selection
+const FIRE_WEIGHTS = buildCumulativeWeights(FIRE_TYPES, (t) => FIRE_DATA[t]);
+
+// Get a weighted random fire type - O(log n) via binary search
 export function getRandomFireType(): FireType {
-  const weights: Record<FireType, number> = {
-    structural: 25,
-    electrical: 20,
-    kitchen: 15,
-    industrial: 8,
-    chemical: 3,
-    vehicle: 10,
-    brush: 5,
-    explosion: 2,
-    gas_leak: 7,
-    arson: 5,
-  };
-  
-  const totalWeight = Object.values(weights).reduce((a, b) => a + b, 0);
-  let random = Math.random() * totalWeight;
-  
-  for (const [type, weight] of Object.entries(weights)) {
-    random -= weight;
-    if (random <= 0) {
-      return type as FireType;
-    }
-  }
-  
-  return 'structural';
+  const random = Math.random() * FIRE_WEIGHTS.totalWeight;
+  return binarySearchWeight(FIRE_WEIGHTS.entries, random);
 }
 
 // ============================================================================

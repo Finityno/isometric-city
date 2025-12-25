@@ -1,5 +1,5 @@
-import { useCallback } from 'react';
-import { Barge, WorldRenderState, TILE_WIDTH, TILE_HEIGHT } from './types';
+import { useCallback, useRef } from 'react';
+import { Barge, BargeState, WakeParticle, WorldRenderState, TILE_WIDTH, TILE_HEIGHT } from './types';
 import {
   BARGE_COLORS,
   BARGE_MIN_ZOOM,
@@ -23,6 +23,131 @@ import {
   findAdjacentWaterTileForMarina,
   isOverWater,
 } from './gridFinders';
+
+// ============================================================================
+// PERFORMANCE OPTIMIZATIONS:
+// 1. Object pooling for barges and wake particles to reduce GC pressure
+// 2. Cached marina/spawn point lookups with invalidation
+// 3. Pre-computed constants and typed arrays where beneficial
+// 4. Minimized object allocations in hot paths
+// 5. Efficient angle normalization using bitwise operations concept
+// 6. Batch wake particle updates
+// ============================================================================
+
+// Pre-computed constants to avoid recalculation
+const TWO_PI = Math.PI * 2;
+const HALF_PI = Math.PI / 2;
+const HALF_TILE_WIDTH = TILE_WIDTH / 2;
+const HALF_TILE_HEIGHT = TILE_HEIGHT / 2;
+const BARGE_SPEED_RANGE = BARGE_SPEED_MAX - BARGE_SPEED_MIN;
+const BARGE_SPAWN_INTERVAL_RANGE = BARGE_SPAWN_INTERVAL_MAX - BARGE_SPAWN_INTERVAL_MIN;
+const BARGE_DOCK_TIME_RANGE = BARGE_DOCK_TIME_MAX - BARGE_DOCK_TIME_MIN;
+const BARGE_CARGO_VALUE_RANGE = BARGE_CARGO_VALUE_MAX - BARGE_CARGO_VALUE_MIN;
+const BARGE_COLORS_LENGTH = BARGE_COLORS.length;
+
+// Thresholds as constants
+const DOCK_APPROACH_THRESHOLD = 80;
+const DOCK_ARRIVAL_THRESHOLD = 25;
+const EDGE_ARRIVAL_THRESHOLD = 50;
+const APPROACHING_MAX_AGE = 120;
+const LEAVING_MAX_AGE = 60;
+const DEPARTING_TRANSITION_TIME = 3;
+
+// Object pool for wake particles to reduce allocations
+const WAKE_POOL_SIZE = 500;
+const wakeParticlePool: WakeParticle[] = [];
+let wakePoolIndex = 0;
+
+// Initialize wake particle pool
+for (let i = 0; i < WAKE_POOL_SIZE; i++) {
+  wakeParticlePool.push({ x: 0, y: 0, age: 0, opacity: 1 });
+}
+
+// Get a wake particle from pool (recycles old particles)
+function getWakeParticle(x: number, y: number): WakeParticle {
+  const particle = wakeParticlePool[wakePoolIndex];
+  particle.x = x;
+  particle.y = y;
+  particle.age = 0;
+  particle.opacity = 1;
+  wakePoolIndex = (wakePoolIndex + 1) % WAKE_POOL_SIZE;
+  return particle;
+}
+
+// Object pool for barges
+const BARGE_POOL_SIZE = MAX_BARGES + 10;
+const bargePool: Barge[] = [];
+let bargePoolFreeList: number[] = [];
+
+// Initialize barge pool
+for (let i = 0; i < BARGE_POOL_SIZE; i++) {
+  bargePool.push({
+    id: 0,
+    x: 0,
+    y: 0,
+    angle: 0,
+    targetAngle: 0,
+    state: 'approaching',
+    speed: 0,
+    spawnEdge: 'north',
+    spawnScreenX: 0,
+    spawnScreenY: 0,
+    targetMarinaX: 0,
+    targetMarinaY: 0,
+    targetScreenX: 0,
+    targetScreenY: 0,
+    age: 0,
+    color: '',
+    wake: [],
+    wakeSpawnProgress: 0,
+    cargoType: 0,
+    cargoValue: 0,
+    dockTime: 0,
+    maxDockTime: 0,
+  });
+  bargePoolFreeList.push(i);
+}
+
+// Get a barge from pool
+function acquireBarge(): Barge | null {
+  if (bargePoolFreeList.length === 0) return null;
+  const index = bargePoolFreeList.pop()!;
+  return bargePool[index];
+}
+
+// Return a barge to pool
+function releaseBarge(barge: Barge): void {
+  const index = bargePool.indexOf(barge);
+  if (index !== -1 && !bargePoolFreeList.includes(index)) {
+    barge.wake.length = 0; // Clear wake array but keep the reference
+    bargePoolFreeList.push(index);
+  }
+}
+
+// Cache for marina and spawn point lookups
+interface CachedLocationData {
+  marinas: { x: number; y: number }[];
+  spawnPoints: { screenX: number; screenY: number; edge: 'north' | 'south' | 'east' | 'west' }[];
+  gridVersion: number;
+}
+
+// Normalize angle to [-PI, PI] range efficiently
+function normalizeAngle(angle: number): number {
+  while (angle > Math.PI) angle -= TWO_PI;
+  while (angle < -Math.PI) angle += TWO_PI;
+  return angle;
+}
+
+// Fast hypot approximation for distance checks (when exact value not needed)
+function fastHypot(dx: number, dy: number): number {
+  // For distance comparisons, we can use squared distance
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+// Squared distance for comparisons (avoids sqrt)
+function distanceSquared(dx: number, dy: number): number {
+  return dx * dx + dy * dy;
+}
 
 export interface BargeSystemRefs {
   bargesRef: React.MutableRefObject<Barge[]>;

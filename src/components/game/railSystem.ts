@@ -7,6 +7,108 @@ import { Tile } from '@/types/game';
 import { TILE_WIDTH, TILE_HEIGHT, CarDirection } from './types';
 
 // ============================================================================
+// Performance: Object Pooling and Reusable Objects
+// ============================================================================
+
+/** Pre-allocated point objects for reuse to avoid GC pressure */
+const _tempPoint1 = { x: 0, y: 0 };
+const _tempPoint2 = { x: 0, y: 0 };
+const _tempPoint3 = { x: 0, y: 0 };
+const _tempPoint4 = { x: 0, y: 0 };
+const _tempPoint5 = { x: 0, y: 0 };
+const _tempPoint6 = { x: 0, y: 0 };
+
+/** Pre-computed tile edge positions (computed once per tile) */
+interface TileEdges {
+  northEdge: { x: number; y: number };
+  eastEdge: { x: number; y: number };
+  southEdge: { x: number; y: number };
+  westEdge: { x: number; y: number };
+  center: { x: number; y: number };
+}
+
+const _cachedEdges: TileEdges = {
+  northEdge: { x: 0, y: 0 },
+  eastEdge: { x: 0, y: 0 },
+  southEdge: { x: 0, y: 0 },
+  westEdge: { x: 0, y: 0 },
+  center: { x: 0, y: 0 },
+};
+
+/** Compute tile edges once and cache them */
+function computeTileEdges(x: number, y: number): TileEdges {
+  const w = TILE_WIDTH;
+  const h = TILE_HEIGHT;
+  _cachedEdges.northEdge.x = x + w * 0.25;
+  _cachedEdges.northEdge.y = y + h * 0.25;
+  _cachedEdges.eastEdge.x = x + w * 0.75;
+  _cachedEdges.eastEdge.y = y + h * 0.25;
+  _cachedEdges.southEdge.x = x + w * 0.75;
+  _cachedEdges.southEdge.y = y + h * 0.75;
+  _cachedEdges.westEdge.x = x + w * 0.25;
+  _cachedEdges.westEdge.y = y + h * 0.75;
+  _cachedEdges.center.x = x + w / 2;
+  _cachedEdges.center.y = y + h / 2;
+  return _cachedEdges;
+}
+
+// ============================================================================
+// Performance: Caching for Rail Analysis
+// ============================================================================
+
+/** Cache for rail tile checks to avoid repeated grid access */
+let _railCacheGrid: Tile[][] | null = null;
+let _railCacheGridSize = 0;
+let _railTileCache: Uint8Array | null = null; // 0 = not rail, 1 = rail, 2 = station
+let _railConnectionCache: Map<number, number> | null = null; // key = y * gridSize + x, value = connection bitmask
+
+/** Invalidate rail caches when grid changes */
+export function invalidateRailCache(): void {
+  _railCacheGrid = null;
+  _railTileCache = null;
+  _railConnectionCache = null;
+}
+
+/** Initialize or update rail tile cache */
+function ensureRailCache(grid: Tile[][], gridSize: number): void {
+  if (_railCacheGrid === grid && _railCacheGridSize === gridSize && _railTileCache) {
+    return; // Cache is still valid
+  }
+
+  _railCacheGrid = grid;
+  _railCacheGridSize = gridSize;
+  _railTileCache = new Uint8Array(gridSize * gridSize);
+  _railConnectionCache = new Map();
+
+  // Pre-compute rail tile status
+  for (let y = 0; y < gridSize; y++) {
+    const rowOffset = y * gridSize;
+    const row = grid[y];
+    for (let x = 0; x < gridSize; x++) {
+      const tile = row[x];
+      const buildingType = tile.building.type;
+      if (buildingType === 'rail' || (buildingType === 'road' && tile.hasRailOverlay === true)) {
+        _railTileCache[rowOffset + x] = 1;
+      } else if (buildingType === 'rail_station') {
+        _railTileCache[rowOffset + x] = 2;
+      }
+    }
+  }
+}
+
+/** Fast rail tile check using cache */
+function isRailTileCached(gridSize: number, x: number, y: number): boolean {
+  if (x < 0 || y < 0 || x >= gridSize || y >= gridSize) return false;
+  return _railTileCache![y * gridSize + x] === 1;
+}
+
+/** Fast station tile check using cache */
+function isStationTileCached(gridSize: number, x: number, y: number): boolean {
+  if (x < 0 || y < 0 || x >= gridSize || y >= gridSize) return false;
+  return _railTileCache![y * gridSize + x] === 2;
+}
+
+// ============================================================================
 // Types
 // ============================================================================
 
