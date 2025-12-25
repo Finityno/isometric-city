@@ -18,6 +18,7 @@ import {
   spawnPedestrianAtBeach,
 } from './pedestrianSystem';
 import { GridSpatialHash } from './SpatialHash';
+import { getCachedCrimeEligibleTiles } from './BuildingCache';
 
 // PERF: Spatial hash cache for station lookups
 // Uses version counter to invalidate when grid changes
@@ -366,32 +367,24 @@ export function useVehicleSystems(
   const spawnCrimeIncidents = useCallback((delta: number) => {
     const { grid: currentGrid, gridSize: currentGridSize, speed: currentSpeed } = worldStateRef.current;
     if (!currentGrid || currentGridSize <= 0 || currentSpeed === 0) return;
-    
+
     const speedMultiplier = currentSpeed === 1 ? 1 : currentSpeed === 2 ? 2 : 3;
     crimeSpawnTimerRef.current -= delta * speedMultiplier;
-    
+
     if (crimeSpawnTimerRef.current > 0) return;
     crimeSpawnTimerRef.current = 3 + Math.random() * 2;
-    
+
+    // PERF: Use cached crime-eligible tiles instead of O(n²) grid scan
+    const gridVersion = gridVersionRef.current;
+    const cachedTiles = getCachedCrimeEligibleTiles(currentGrid, currentGridSize, gridVersion);
+
+    // Add police coverage to the cached tiles
     const eligibleTiles: { x: number; y: number; policeCoverage: number }[] = [];
-    
-    for (let y = 0; y < currentGridSize; y++) {
-      for (let x = 0; x < currentGridSize; x++) {
-        const tile = currentGrid[y][x];
-        const isBuilding = tile.building.type !== 'grass' && 
-            tile.building.type !== 'water' && 
-            tile.building.type !== 'road' && 
-            tile.building.type !== 'tree' &&
-            tile.building.type !== 'empty';
-        const hasActivity = tile.building.population > 0 || tile.building.jobs > 0;
-        
-        if (isBuilding && hasActivity) {
-          const policeCoverage = state.services.police[y]?.[x] || 0;
-          eligibleTiles.push({ x, y, policeCoverage });
-        }
-      }
+    for (const tile of cachedTiles) {
+      const policeCoverage = state.services.police[tile.y]?.[tile.x] || 0;
+      eligibleTiles.push({ x: tile.x, y: tile.y, policeCoverage });
     }
-    
+
     if (eligibleTiles.length === 0) return;
     
     const avgCoverage = eligibleTiles.reduce((sum, t) => sum + t.policeCoverage, 0) / eligibleTiles.length;
@@ -430,7 +423,7 @@ export function useVehicleSystems(
         timeRemaining: duration,
       });
     }
-  }, [worldStateRef, crimeSpawnTimerRef, activeCrimeIncidentsRef, state.services.police, state.stats.population]);
+  }, [worldStateRef, gridVersionRef, crimeSpawnTimerRef, activeCrimeIncidentsRef, state.services.police, state.stats.population]);
 
   const updateCrimeIncidents = useCallback((delta: number) => {
     const { speed: currentSpeed } = worldStateRef.current;

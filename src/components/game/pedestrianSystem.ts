@@ -42,6 +42,37 @@ import {
 } from './constants';
 import { isRoadTile, getDirectionOptions, findPathOnRoads, getDirectionToTile, findNearestRoadToBuilding } from './utils';
 
+// PERF: Pedestrian ID map cache for O(1) lookups instead of O(n) array.find()
+// This is rebuilt each frame when pedestrians are updated
+let pedestrianIdMap: Map<number, Pedestrian> | null = null;
+let pedestrianIdMapVersion = 0;
+let lastPedestrianArrayRef: Pedestrian[] | null = null;
+
+/**
+ * PERF: Build or get the pedestrian ID map for O(1) lookups
+ * Rebuilds if the pedestrian array reference changes
+ */
+export function getPedestrianIdMap(pedestrians: Pedestrian[]): Map<number, Pedestrian> {
+  // Rebuild if array reference changed (new frame)
+  if (lastPedestrianArrayRef !== pedestrians) {
+    pedestrianIdMap = new Map();
+    for (const ped of pedestrians) {
+      pedestrianIdMap.set(ped.id, ped);
+    }
+    lastPedestrianArrayRef = pedestrians;
+    pedestrianIdMapVersion++;
+  }
+  return pedestrianIdMap!;
+}
+
+/**
+ * PERF: Get pedestrian by ID using cached map - O(1) instead of O(n)
+ */
+export function getPedestrianById(pedestrians: Pedestrian[], id: number): Pedestrian | undefined {
+  const map = getPedestrianIdMap(pedestrians);
+  return map.get(id);
+}
+
 // Building types that are recreational (pedestrians do activities here)
 const RECREATION_BUILDINGS: BuildingType[] = [
   'park', 'park_large', 'tennis', 'basketball_courts', 'playground_small',
@@ -659,7 +690,8 @@ function updateSocializingState(
   
   // Check if partner is still socializing
   if (ped.socialTarget !== null) {
-    const partner = allPedestrians.find(p => p.id === ped.socialTarget);
+    // PERF: Use O(1) map lookup instead of O(n) array.find()
+    const partner = getPedestrianById(allPedestrians, ped.socialTarget);
     if (!partner) {
       // Partner no longer exists, stop socializing
       ped.state = 'walking';
@@ -685,7 +717,8 @@ function updateSocializingState(
   if (ped.activityProgress >= 1) {
     // Finished socializing - also signal partner to finish
     if (ped.socialTarget !== null) {
-      const partner = allPedestrians.find(p => p.id === ped.socialTarget);
+      // PERF: Use O(1) map lookup instead of O(n) array.find()
+      const partner = getPedestrianById(allPedestrians, ped.socialTarget);
       if (partner && partner.state === 'socializing') {
         // Set partner's progress to complete so they finish on next update
         partner.activityProgress = 1;
