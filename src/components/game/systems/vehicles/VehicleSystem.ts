@@ -1,13 +1,13 @@
 import React, { useCallback, useRef } from 'react';
-import { Car, CarDirection, EmergencyVehicle, EmergencyVehicleType, Pedestrian, PedestrianDestType, WorldRenderState, TILE_WIDTH, TILE_HEIGHT } from './types';
-import { CAR_COLORS, CAR_MIN_ZOOM, CAR_MIN_ZOOM_MOBILE, PEDESTRIAN_MIN_ZOOM, PEDESTRIAN_MIN_ZOOM_MOBILE, DIRECTION_META, PEDESTRIAN_MAX_COUNT, PEDESTRIAN_ROAD_TILE_DENSITY, PEDESTRIAN_SPAWN_BATCH_SIZE, PEDESTRIAN_SPAWN_INTERVAL } from './constants';
-import { isRoadTile, getDirectionOptions, pickNextDirection, findPathOnRoads, getDirectionToTile, gridToScreen } from './utils';
-import { findResidentialBuildings, findPedestrianDestinations, findFires, findRecreationAreas, findEnterableBuildings, SPORTS_TYPES, ACTIVE_RECREATION_TYPES } from './gridFinders';
-import { drawPedestrians as drawPedestriansUtil } from './drawPedestrians';
+import { Car, CarDirection, EmergencyVehicle, EmergencyVehicleType, Pedestrian, PedestrianDestType, WorldRenderState, TILE_WIDTH, TILE_HEIGHT } from '../../types';
+import { CAR_COLORS, CAR_MIN_ZOOM, CAR_MIN_ZOOM_MOBILE, PEDESTRIAN_MIN_ZOOM, PEDESTRIAN_MIN_ZOOM_MOBILE, DIRECTION_META, PEDESTRIAN_MAX_COUNT, PEDESTRIAN_ROAD_TILE_DENSITY, PEDESTRIAN_SPAWN_BATCH_SIZE, PEDESTRIAN_SPAWN_INTERVAL } from '../../constants';
+import { isRoadTile, getDirectionOptions, pickNextDirection, findPathOnRoads, getDirectionToTile, gridToScreen } from '../../utils';
+import { findResidentialBuildings, findPedestrianDestinations, findFires, findRecreationAreas, findEnterableBuildings, SPORTS_TYPES, ACTIVE_RECREATION_TYPES } from '../../gridFinders';
+import { drawPedestrians as drawPedestriansUtil } from '../../drawPedestrians';
 import { BuildingType, Tile } from '@/types/game';
-import { getTrafficLightState, canProceedThroughIntersection, TRAFFIC_LIGHT_TIMING } from './trafficSystem';
-import { isRailroadCrossing, shouldStopAtCrossing } from './railSystem';
-import { CrimeType, getRandomCrimeType, getCrimeDuration } from './incidentData';
+import { getTrafficLightState, canProceedThroughIntersection, TRAFFIC_LIGHT_TIMING } from './TrafficSystem';
+import { isRailroadCrossing, shouldStopAtCrossing } from '../trains/RailSystem';
+import { CrimeType, getRandomCrimeType, getCrimeDuration } from '../../incidentData';
 import {
   createPedestrian,
   updatePedestrianState,
@@ -16,9 +16,9 @@ import {
   findBeachTiles,
   getRandomBeachTile,
   spawnPedestrianAtBeach,
-} from './pedestrianSystem';
-import { GridSpatialHash } from './SpatialHash';
-import { getCachedCrimeEligibleTiles } from './BuildingCache';
+} from '../pedestrians/PedestrianSystem';
+import { GridSpatialHash } from '../../SpatialHash';
+import { getCachedCrimeEligibleTiles } from '../../BuildingCache';
 
 // PERF: Pre-computed speed multipliers to avoid branching in hot paths
 const SPEED_MULTIPLIERS = [0, 1, 2.5, 4] as const;

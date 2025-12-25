@@ -1,5 +1,5 @@
 import { useCallback, useRef } from 'react';
-import { Barge, BargeState, WakeParticle, WorldRenderState, TILE_WIDTH, TILE_HEIGHT } from './types';
+import { Barge, BargeState, WakeParticle, WorldRenderState, TILE_WIDTH, TILE_HEIGHT } from '../../types';
 import {
   BARGE_COLORS,
   BARGE_MIN_ZOOM,
@@ -15,14 +15,14 @@ import {
   BARGE_WAKE_SPAWN_INTERVAL,
   WAKE_MAX_AGE,
   WAKE_MIN_ZOOM_MOBILE,
-} from './constants';
-import { gridToScreen } from './utils';
+} from '../../constants';
+import { gridToScreen } from '../../utils';
 import {
   findOceanConnectedMarinas,
   findOceanSpawnPoints,
   findAdjacentWaterTileForMarina,
   isOverWater,
-} from './gridFinders';
+} from '../../gridFinders';
 import { normalizeAngle, distanceSquared } from '@/lib/utils/math';
 
 // ============================================================================

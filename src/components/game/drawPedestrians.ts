@@ -14,7 +14,7 @@
 
 import { Pedestrian, PedestrianActivity, TILE_WIDTH, TILE_HEIGHT } from './types';
 import { DIRECTION_META } from './constants';
-import { getPedestrianOpacity, getVisiblePedestrians } from './pedestrianSystem';
+import { getPedestrianOpacity, getVisiblePedestrians } from './systems/pedestrians';
 
 // LOD thresholds - draw simpler at lower zoom
 const LOD_SIMPLE_ZOOM = 0.55;  // Below this, draw very simple pedestrians (just above min zoom)

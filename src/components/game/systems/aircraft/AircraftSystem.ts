@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { Airplane, Helicopter, WorldRenderState, TILE_WIDTH, TILE_HEIGHT, PlaneType, ContrailParticle, RotorWashParticle } from './types';
+import { Airplane, Helicopter, WorldRenderState, TILE_WIDTH, TILE_HEIGHT, PlaneType, ContrailParticle, RotorWashParticle } from '../../types';
 import {
   AIRPLANE_MIN_POPULATION,
   AIRPLANE_COLORS,
@@ -10,9 +10,9 @@ import {
   ROTOR_WASH_MAX_AGE,
   ROTOR_WASH_SPAWN_INTERVAL,
   PLANE_TYPES,
-} from './constants';
-import { gridToScreen } from './utils';
-import { findAirports, findHeliports } from './gridFinders';
+} from '../../constants';
+import { gridToScreen } from '../../utils';
+import { findAirports, findHeliports } from '../../gridFinders';
 
 // ============================================================================
 // PERFORMANCE OPTIMIZATIONS: Pre-computed constants and lookup tables

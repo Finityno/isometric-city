@@ -29,23 +29,34 @@ import {
   setActiveSpritePack,
   SpritePack,
 } from '@/lib/renderConfig';
-
-// ============================================================================
-// CONSTANTS
-// ============================================================================
-
-const STORAGE_KEY = 'isocity-game-state';
-const SAVED_CITY_STORAGE_KEY = 'isocity-saved-city';
-const SAVED_CITIES_INDEX_KEY = 'isocity-saved-cities-index';
-const SAVED_CITY_PREFIX = 'isocity-city-';
-const SPRITE_PACK_STORAGE_KEY = 'isocity-sprite-pack';
-const DAY_NIGHT_MODE_STORAGE_KEY = 'isocity-day-night-mode';
+import {
+  loadGameState,
+  saveGameState,
+  clearGameState,
+  getSavedCities,
+  saveSavedCitiesIndex,
+  saveCity as saveCityState,
+  loadCity as loadCityState,
+  deleteCity as deleteCityState,
+  saveCityForRestore,
+  loadSavedCityInfo,
+  loadSavedCityState,
+  clearSavedCityStorage,
+  loadSpritePackId,
+  saveSpritePackId,
+  loadDayNightMode,
+  saveDayNightMode,
+  extractGameStateFromStore,
+  migrateGameState,
+  isValidGameState,
+  type DayNightMode,
+} from '@/lib/storage';
 
 // ============================================================================
 // TYPES
 // ============================================================================
 
-export type DayNightMode = 'auto' | 'day' | 'night';
+export type { DayNightMode } from '@/lib/storage';
 
 export type SavedCityInfo = {
   cityName: string;
@@ -119,209 +130,6 @@ const toolZoneMap: Partial<Record<Tool, ZoneType>> = {
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
-}
-
-function generateUUID(): string {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-    return crypto.randomUUID();
-  }
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = Math.random() * 16 | 0;
-    const v = c === 'x' ? r : (r & 0x3 | 0x8);
-    return v.toString(16);
-  });
-}
-
-// ============================================================================
-// LOCALSTORAGE FUNCTIONS
-// ============================================================================
-
-function loadGameState(): GameState | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (parsed?.grid && Array.isArray(parsed.grid) && parsed.gridSize &&
-          typeof parsed.gridSize === 'number' && parsed.stats &&
-          parsed.stats.money !== undefined && parsed.stats.population !== undefined) {
-        // Migrations
-        if (parsed.grid) {
-          for (let y = 0; y < parsed.grid.length; y++) {
-            for (let x = 0; x < parsed.grid[y].length; x++) {
-              if (parsed.grid[y][x]?.building?.type === 'park_medium') {
-                parsed.grid[y][x].building.type = 'park_large';
-              }
-              if (parsed.grid[y][x]?.building && parsed.grid[y][x].building.constructionProgress === undefined) {
-                parsed.grid[y][x].building.constructionProgress = 100;
-              }
-              if (parsed.grid[y][x]?.building && parsed.grid[y][x].building.abandoned === undefined) {
-                parsed.grid[y][x].building.abandoned = false;
-              }
-            }
-          }
-        }
-        if (parsed.selectedTool === 'park_medium') {
-          parsed.selectedTool = 'park_large';
-        }
-        if (!parsed.adjacentCities) parsed.adjacentCities = [];
-        for (const city of parsed.adjacentCities) {
-          if (city.discovered === undefined) city.discovered = true;
-        }
-        if (!parsed.waterBodies) parsed.waterBodies = [];
-        if (parsed.hour === undefined) parsed.hour = 12;
-        if (parsed.effectiveTaxRate === undefined) parsed.effectiveTaxRate = parsed.taxRate ?? 9;
-        if (parsed.gameVersion === undefined) parsed.gameVersion = 0;
-        if (!parsed.id) parsed.id = generateUUID();
-        return parsed as GameState;
-      } else {
-        localStorage.removeItem(STORAGE_KEY);
-      }
-    }
-  } catch (e) {
-    console.error('Failed to load game state:', e);
-    try { localStorage.removeItem(STORAGE_KEY); } catch {}
-  }
-  return null;
-}
-
-function saveGameState(state: GameState): void {
-  if (typeof window === 'undefined') return;
-  try {
-    if (!state?.grid || !state?.gridSize || !state?.stats) return;
-    const serialized = JSON.stringify(state);
-    if (serialized.length > 5 * 1024 * 1024) return;
-    localStorage.setItem(STORAGE_KEY, serialized);
-  } catch (e) {
-    if (e instanceof DOMException && (e.code === 22 || e.code === 1014)) {
-      console.error('localStorage quota exceeded');
-    } else {
-      console.error('Failed to save game state:', e);
-    }
-  }
-}
-
-function clearGameState(): void {
-  if (typeof window === 'undefined') return;
-  try { localStorage.removeItem(STORAGE_KEY); } catch {}
-}
-
-function loadSpritePackId(): string {
-  if (typeof window === 'undefined') return DEFAULT_SPRITE_PACK_ID;
-  try {
-    const saved = localStorage.getItem(SPRITE_PACK_STORAGE_KEY);
-    if (saved && SPRITE_PACKS.some(p => p.id === saved)) return saved;
-  } catch {}
-  return DEFAULT_SPRITE_PACK_ID;
-}
-
-function saveSpritePackId(packId: string): void {
-  if (typeof window === 'undefined') return;
-  try { localStorage.setItem(SPRITE_PACK_STORAGE_KEY, packId); } catch {}
-}
-
-function loadDayNightMode(): DayNightMode {
-  if (typeof window === 'undefined') return 'auto';
-  try {
-    const saved = localStorage.getItem(DAY_NIGHT_MODE_STORAGE_KEY);
-    if (saved === 'auto' || saved === 'day' || saved === 'night') return saved;
-  } catch {}
-  return 'auto';
-}
-
-function saveDayNightMode(mode: DayNightMode): void {
-  if (typeof window === 'undefined') return;
-  try { localStorage.setItem(DAY_NIGHT_MODE_STORAGE_KEY, mode); } catch {}
-}
-
-function saveCityForRestore(state: GameState): void {
-  if (typeof window === 'undefined') return;
-  try {
-    const savedData = {
-      state,
-      info: {
-        cityName: state.cityName,
-        population: state.stats.population,
-        money: state.stats.money,
-        savedAt: Date.now(),
-      },
-    };
-    localStorage.setItem(SAVED_CITY_STORAGE_KEY, JSON.stringify(savedData));
-  } catch {}
-}
-
-function loadSavedCityInfo(): SavedCityInfo {
-  if (typeof window === 'undefined') return null;
-  try {
-    const saved = localStorage.getItem(SAVED_CITY_STORAGE_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (parsed.info) return parsed.info as SavedCityInfo;
-    }
-  } catch {}
-  return null;
-}
-
-function loadSavedCityState(): GameState | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const saved = localStorage.getItem(SAVED_CITY_STORAGE_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (parsed.state?.grid && parsed.state?.gridSize && parsed.state?.stats) {
-        return parsed.state as GameState;
-      }
-    }
-  } catch {}
-  return null;
-}
-
-function clearSavedCityStorage(): void {
-  if (typeof window === 'undefined') return;
-  try { localStorage.removeItem(SAVED_CITY_STORAGE_KEY); } catch {}
-}
-
-function loadSavedCitiesIndex(): SavedCityMeta[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const saved = localStorage.getItem(SAVED_CITIES_INDEX_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed)) return parsed as SavedCityMeta[];
-    }
-  } catch {}
-  return [];
-}
-
-function saveSavedCitiesIndex(cities: SavedCityMeta[]): void {
-  if (typeof window === 'undefined') return;
-  try { localStorage.setItem(SAVED_CITIES_INDEX_KEY, JSON.stringify(cities)); } catch {}
-}
-
-function saveCityState(cityId: string, state: GameState): void {
-  if (typeof window === 'undefined') return;
-  try {
-    const serialized = JSON.stringify(state);
-    if (serialized.length > 5 * 1024 * 1024) return;
-    localStorage.setItem(SAVED_CITY_PREFIX + cityId, serialized);
-  } catch {}
-}
-
-function loadCityState(cityId: string): GameState | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const saved = localStorage.getItem(SAVED_CITY_PREFIX + cityId);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (parsed?.grid && parsed?.gridSize && parsed?.stats) return parsed as GameState;
-    }
-  } catch {}
-  return null;
-}
-
-function deleteCityState(cityId: string): void {
-  if (typeof window === 'undefined') return;
-  try { localStorage.removeItem(SAVED_CITY_PREFIX + cityId); } catch {}
 }
 
 // ============================================================================
@@ -442,7 +250,7 @@ export const useGameStore = create<GameStore>()(
       const savedDayNightMode = loadDayNightMode();
 
       // Load saved cities index
-      const cities = loadSavedCitiesIndex();
+      const cities = getSavedCities();
 
       // Load game state
       const saved = loadGameState();
@@ -684,37 +492,20 @@ export const useGameStore = create<GameStore>()(
     loadState: (stateString) => {
       try {
         const parsed = JSON.parse(stateString);
-        if (parsed?.grid && Array.isArray(parsed.grid) && parsed.gridSize &&
-            typeof parsed.gridSize === 'number' && parsed.stats &&
-            parsed.stats.money !== undefined && parsed.stats.population !== undefined) {
-          // Migrations
-          if (!parsed.adjacentCities) parsed.adjacentCities = [];
-          for (const city of parsed.adjacentCities) {
-            if (city.discovered === undefined) city.discovered = true;
-          }
-          if (!parsed.waterBodies) parsed.waterBodies = [];
-          if (parsed.effectiveTaxRate === undefined) parsed.effectiveTaxRate = parsed.taxRate ?? 9;
-          if (parsed.grid) {
-            for (let y = 0; y < parsed.grid.length; y++) {
-              for (let x = 0; x < parsed.grid[y].length; x++) {
-                if (parsed.grid[y][x]?.building && parsed.grid[y][x].building.constructionProgress === undefined) {
-                  parsed.grid[y][x].building.constructionProgress = 100;
-                }
-                if (parsed.grid[y][x]?.building && parsed.grid[y][x].building.abandoned === undefined) {
-                  parsed.grid[y][x].building.abandoned = false;
-                }
-              }
-            }
-          }
 
-          set((state) => ({
-            ...(parsed as GameState),
-            gameVersion: (state.gameVersion ?? 0) + 1,
-            hasExistingGame: true,
-          }));
-          return true;
+        if (!isValidGameState(parsed)) {
+          return false;
         }
-        return false;
+
+        // Apply migrations
+        const migratedState = migrateGameState(parsed);
+
+        set((state) => ({
+          ...migratedState,
+          gameVersion: (state.gameVersion ?? 0) + 1,
+          hasExistingGame: true,
+        }));
+        return true;
       } catch {
         return false;
       }
@@ -722,33 +513,7 @@ export const useGameStore = create<GameStore>()(
 
     exportState: () => {
       const state = get();
-      // Extract just the GameState properties
-      const gameState: GameState = {
-        id: state.id,
-        grid: state.grid,
-        gridSize: state.gridSize,
-        cityName: state.cityName,
-        year: state.year,
-        month: state.month,
-        day: state.day,
-        hour: state.hour,
-        tick: state.tick,
-        speed: state.speed,
-        selectedTool: state.selectedTool,
-        taxRate: state.taxRate,
-        effectiveTaxRate: state.effectiveTaxRate,
-        stats: state.stats,
-        budget: state.budget,
-        services: state.services,
-        notifications: state.notifications,
-        advisorMessages: state.advisorMessages,
-        history: state.history,
-        activePanel: state.activePanel,
-        disastersEnabled: state.disastersEnabled,
-        adjacentCities: state.adjacentCities,
-        waterBodies: state.waterBodies,
-        gameVersion: state.gameVersion,
-      };
+      const gameState = extractGameStateFromStore(state);
       return JSON.stringify(gameState);
     },
 
@@ -800,32 +565,7 @@ export const useGameStore = create<GameStore>()(
 
     saveCurrentCityForRestore: () => {
       const state = get();
-      const gameState: GameState = {
-        id: state.id,
-        grid: state.grid,
-        gridSize: state.gridSize,
-        cityName: state.cityName,
-        year: state.year,
-        month: state.month,
-        day: state.day,
-        hour: state.hour,
-        tick: state.tick,
-        speed: state.speed,
-        selectedTool: state.selectedTool,
-        taxRate: state.taxRate,
-        effectiveTaxRate: state.effectiveTaxRate,
-        stats: state.stats,
-        budget: state.budget,
-        services: state.services,
-        notifications: state.notifications,
-        advisorMessages: state.advisorMessages,
-        history: state.history,
-        activePanel: state.activePanel,
-        disastersEnabled: state.disastersEnabled,
-        adjacentCities: state.adjacentCities,
-        waterBodies: state.waterBodies,
-        gameVersion: state.gameVersion,
-      };
+      const gameState = extractGameStateFromStore(state);
       saveCityForRestore(gameState);
     },
 
@@ -860,33 +600,7 @@ export const useGameStore = create<GameStore>()(
         savedAt: Date.now(),
       };
 
-      const gameState: GameState = {
-        id: state.id,
-        grid: state.grid,
-        gridSize: state.gridSize,
-        cityName: state.cityName,
-        year: state.year,
-        month: state.month,
-        day: state.day,
-        hour: state.hour,
-        tick: state.tick,
-        speed: state.speed,
-        selectedTool: state.selectedTool,
-        taxRate: state.taxRate,
-        effectiveTaxRate: state.effectiveTaxRate,
-        stats: state.stats,
-        budget: state.budget,
-        services: state.services,
-        notifications: state.notifications,
-        advisorMessages: state.advisorMessages,
-        history: state.history,
-        activePanel: state.activePanel,
-        disastersEnabled: state.disastersEnabled,
-        adjacentCities: state.adjacentCities,
-        waterBodies: state.waterBodies,
-        gameVersion: state.gameVersion,
-      };
-
+      const gameState = extractGameStateFromStore(state);
       saveCityState(state.id, gameState);
 
       set((prev) => {
@@ -911,27 +625,8 @@ export const useGameStore = create<GameStore>()(
       const cityState = loadCityState(cityId);
       if (!cityState) return false;
 
+      // Ensure ID is set (migrations handle the rest)
       if (!cityState.id) cityState.id = cityId;
-
-      // Migrations
-      if (!cityState.adjacentCities) cityState.adjacentCities = [];
-      for (const city of cityState.adjacentCities) {
-        if (city.discovered === undefined) city.discovered = true;
-      }
-      if (!cityState.waterBodies) cityState.waterBodies = [];
-      if (cityState.effectiveTaxRate === undefined) cityState.effectiveTaxRate = cityState.taxRate ?? 9;
-      if (cityState.grid) {
-        for (let y = 0; y < cityState.grid.length; y++) {
-          for (let x = 0; x < cityState.grid[y].length; x++) {
-            if (cityState.grid[y][x]?.building && cityState.grid[y][x].building.constructionProgress === undefined) {
-              cityState.grid[y][x].building.constructionProgress = 100;
-            }
-            if (cityState.grid[y][x]?.building && cityState.grid[y][x].building.abandoned === undefined) {
-              cityState.grid[y][x].building.abandoned = false;
-            }
-          }
-        }
-      }
 
       set((state) => ({
         ...cityState,
@@ -1042,32 +737,7 @@ if (typeof window !== 'undefined') {
 
     useGameStore.getState()._setIsSaving(true);
     try {
-      const gameState: GameState = {
-        id: state.id,
-        grid: state.grid,
-        gridSize: state.gridSize,
-        cityName: state.cityName,
-        year: state.year,
-        month: state.month,
-        day: state.day,
-        hour: state.hour,
-        tick: state.tick,
-        speed: state.speed,
-        selectedTool: state.selectedTool,
-        taxRate: state.taxRate,
-        effectiveTaxRate: state.effectiveTaxRate,
-        stats: state.stats,
-        budget: state.budget,
-        services: state.services,
-        notifications: state.notifications,
-        advisorMessages: state.advisorMessages,
-        history: state.history,
-        activePanel: state.activePanel,
-        disastersEnabled: state.disastersEnabled,
-        adjacentCities: state.adjacentCities,
-        waterBodies: state.waterBodies,
-        gameVersion: state.gameVersion,
-      };
+      const gameState = extractGameStateFromStore(state);
       saveGameState(gameState);
       lastSaveTime = Date.now();
       useGameStore.setState({ hasExistingGame: true });

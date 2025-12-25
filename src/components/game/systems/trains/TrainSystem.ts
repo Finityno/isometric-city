@@ -12,7 +12,7 @@
  */
 
 import { Tile } from '@/types/game';
-import { Train, TrainCarriage, CarriageType, TrainType, CarDirection, TILE_WIDTH, TILE_HEIGHT, TrainSmokeParticle } from './types';
+import { Train, TrainCarriage, CarriageType, TrainType, CarDirection, TILE_WIDTH, TILE_HEIGHT, TrainSmokeParticle } from '../../types';
 import {
   DIRECTION_META,
   OPPOSITE_DIRECTION,
@@ -27,7 +27,7 @@ import {
   TRAIN_SMOKE_PARTICLE_GROWTH,
   TRAIN_SMOKE_MAX_PARTICLES,
   TRAIN_SMOKE_MAX_PARTICLES_MOBILE,
-} from './constants';
+} from '../../constants';
 import {
   isRailTile,
   isRailStationTile,
@@ -43,8 +43,8 @@ import {
   TRAIN_CAR,
   TRACK_SEPARATION_RATIO,
   TrackType,
-} from './railSystem';
-import { gridToScreen } from './utils';
+} from './RailSystem';
+import { gridToScreen } from '../../utils';
 
 // ============================================================================
 // Pre-computed Constants (avoid runtime calculations)

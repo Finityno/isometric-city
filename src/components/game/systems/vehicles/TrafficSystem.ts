@@ -11,13 +11,13 @@
  */
 
 import { Tile } from '@/types/game';
-import { TILE_WIDTH, TILE_HEIGHT, CarDirection } from './types';
+import { TILE_WIDTH, TILE_HEIGHT, CarDirection } from '../../types';
 import {
   TRAFFIC_LIGHT_MIN_ZOOM,
   DIRECTION_ARROWS_MIN_ZOOM,
   MEDIAN_PLANTS_MIN_ZOOM,
   LANE_MARKINGS_MEDIAN_MIN_ZOOM,
-} from './constants';
+} from '../../constants';
 
 // ============================================================================
 // Caching Infrastructure

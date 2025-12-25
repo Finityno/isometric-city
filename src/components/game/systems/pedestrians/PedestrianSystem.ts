@@ -25,7 +25,7 @@ import {
   CarDirection,
   TILE_WIDTH,
   TILE_HEIGHT,
-} from './types';
+} from '../../types';
 import {
   PEDESTRIAN_SKIN_COLORS,
   PEDESTRIAN_SHIRT_COLORS,
@@ -46,8 +46,8 @@ import {
   PEDESTRIAN_BEACH_MAX_TIME,
   PEDESTRIAN_BEACH_SWIM_CHANCE,
   PEDESTRIAN_MAT_COLORS,
-} from './constants';
-import { isRoadTile, getDirectionOptions, findPathOnRoads, getDirectionToTile, findNearestRoadToBuilding } from './utils';
+} from '../../constants';
+import { isRoadTile, getDirectionOptions, findPathOnRoads, getDirectionToTile, findNearestRoadToBuilding } from '../../utils';
 
 // ============================================================================
 // PERFORMANCE: Pre-computed constants and cached values

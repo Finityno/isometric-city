@@ -67,8 +67,6 @@ import {
   createTouchMoveHandler,
   createTouchEndHandler,
   createWheelHandler,
-  clampOffset as clampOffsetUtil,
-  getMapBounds as getMapBoundsUtil,
 } from '@/components/game/canvas/input';
 import {
   drawGreenBaseTile,
@@ -94,12 +92,12 @@ import {
   generateTourWaypoints,
 } from '@/components/game/gridFinders';
 import { drawAirplanes as drawAirplanesUtil, drawHelicopters as drawHelicoptersUtil, drawSeaplanes as drawSeaplanesUtil } from '@/components/game/drawAircraft';
-import { useVehicleSystems, VehicleSystemRefs, VehicleSystemState } from '@/components/game/vehicleSystems';
+import { useVehicleSystems, VehicleSystemRefs, VehicleSystemState } from '@/components/game/systems/vehicles';
 import { useBuildingHelpers } from '@/components/game/buildingHelpers';
-import { useAircraftSystems, AircraftSystemRefs, AircraftSystemState } from '@/components/game/aircraftSystems';
-import { useBargeSystem, BargeSystemRefs, BargeSystemState } from '@/components/game/bargeSystem';
-import { useBoatSystem, BoatSystemRefs, BoatSystemState } from '@/components/game/boatSystem';
-import { useSeaplaneSystem, SeaplaneSystemRefs, SeaplaneSystemState } from '@/components/game/seaplaneSystem';
+import { useAircraftSystems, AircraftSystemRefs, AircraftSystemState } from '@/components/game/systems/aircraft';
+import { useBargeSystem, BargeSystemRefs, BargeSystemState } from '@/components/game/systems/marine';
+import { useBoatSystem, BoatSystemRefs, BoatSystemState } from '@/components/game/systems/marine';
+import { useSeaplaneSystem, SeaplaneSystemRefs, SeaplaneSystemState } from '@/components/game/systems/marine';
 import { useEffectsSystems, EffectsSystemRefs, EffectsSystemState } from '@/components/game/effectsSystems';
 import {
   analyzeMergedRoad,
@@ -109,7 +107,7 @@ import {
   drawCrosswalks,
   ROAD_COLORS,
   drawRoadArrow,
-} from '@/components/game/trafficSystem';
+} from '@/components/game/systems/vehicles';
 import { CrimeType, getCrimeName, getCrimeDescription, getFireDescriptionForTile, getFireNameForTile } from '@/components/game/incidentData';
 import {
   drawRailTrack,
@@ -120,7 +118,7 @@ import {
   drawRailroadCrossing,
   getCrossingStateForTile,
   GATE_ANIMATION_SPEED,
-} from '@/components/game/railSystem';
+} from '@/components/game/systems/trains';
 import {
   spawnTrain,
   updateTrain,
@@ -129,14 +127,25 @@ import {
   MAX_TRAINS,
   TRAIN_SPAWN_INTERVAL,
   TRAINS_PER_RAIL_TILES,
-} from '@/components/game/trainSystem';
+} from '@/components/game/systems/trains';
 import { Train } from '@/components/game/types';
+import { useCanvasState } from '@/components/game/canvas/hooks/useCanvasState';
+import { useRenderQueues } from '@/components/game/canvas/hooks/useRenderQueues';
+import { useViewport } from '@/components/game/canvas/hooks/useViewport';
+import {
+  drawHoverCanvas as drawHoverCanvasUtil,
+  drawLighting as drawLightingUtil,
+  nonLitTypes as nonLitTypesImported,
+  specialTypes as specialTypesImported,
+  residentialTypes as residentialTypesImported,
+  commercialTypes as commercialTypesImported,
+} from '@/components/game/canvas/renderers';
 
-// PERF: Static sets for lighting calculations (moved to module level to avoid recreation)
-const nonLitTypes = new Set(['grass', 'empty', 'water', 'road', 'tree', 'park', 'park_large', 'tennis']);
-const specialTypes = new Set(['hospital', 'fire_station', 'police_station', 'power_plant']);
-const residentialTypes = new Set(['house_small', 'house_medium', 'mansion', 'apartment_low', 'apartment_high']);
-const commercialTypes = new Set(['shop_small', 'shop_medium', 'office_low', 'office_high', 'mall']);
+// PERF: Static sets for lighting calculations (imported from LightingRenderer module)
+const nonLitTypes = nonLitTypesImported;
+const specialTypes = specialTypesImported;
+const residentialTypes = residentialTypesImported;
+const commercialTypes = commercialTypesImported;
 
 // PERF: Pre-computed isometric math constants (avoids recalculation every frame)
 const HALF_TILE_WIDTH = TILE_WIDTH / 2;
@@ -214,123 +223,134 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
   const placeAtTile = usePlaceAtTile();
   const { connectToCity, checkAndDiscoverCities } = useGameActions();
   const stats = useCityStats();
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const hoverCanvasRef = useRef<HTMLCanvasElement>(null); // PERF: Separate canvas for hover/selection highlights
-  const carsCanvasRef = useRef<HTMLCanvasElement>(null);
-  const buildingsCanvasRef = useRef<HTMLCanvasElement>(null); // Buildings rendered on top of cars/trains
-  const airCanvasRef = useRef<HTMLCanvasElement>(null); // Aircraft + fireworks rendered above buildings
-  const lightingCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  // CONSOLIDATED STATE: Use extracted canvas state hook to replace 60+ individual refs/state
+  const {
+    canvases,
+    entityRefs,
+    offset,
+    setOffset,
+    zoom,
+    setZoom,
+    viewportRefs,
+    isDragging,
+    setIsDragging,
+    isPanning,
+    setIsPanning,
+    dragStart,
+    setDragStart,
+    dragStartTile,
+    setDragStartTile,
+    dragEndTile,
+    setDragEndTile,
+    roadDrawDirection,
+    setRoadDrawDirection,
+    interactionRefs,
+    hoveredTile,
+    setHoveredTile,
+    hoveredIncident,
+    setHoveredIncident,
+    hoverRefs,
+    performanceRefs,
+    worldState,
+    canvasSize,
+    setCanvasSize,
+    imagesLoaded,
+    setImagesLoaded,
+    imageLoadVersion,
+    setImageLoadVersion,
+    cityConnectionDialog,
+    setCityConnectionDialog,
+  } = useCanvasState(isMobile, grid, gridSize, speed);
+
+  // Extract individual refs for compatibility with existing code
+  const canvasRef = canvases.main;
+  const hoverCanvasRef = canvases.hover;
+  const carsCanvasRef = canvases.cars;
+  const buildingsCanvasRef = canvases.buildings;
+  const airCanvasRef = canvases.air;
+  const lightingCanvasRef = canvases.lighting;
+
+  const carsRef = entityRefs.cars;
+  const carIdRef = entityRefs.carId;
+  const carSpawnTimerRef = entityRefs.carSpawnTimer;
+  const emergencyVehiclesRef = entityRefs.emergencyVehicles;
+  const emergencyVehicleIdRef = entityRefs.emergencyVehicleId;
+  const emergencyDispatchTimerRef = entityRefs.emergencyDispatchTimer;
+  const activeFiresRef = entityRefs.activeFires;
+  const activeCrimesRef = entityRefs.activeCrimes;
+  const activeCrimeIncidentsRef = entityRefs.activeCrimeIncidents;
+  const crimeSpawnTimerRef = entityRefs.crimeSpawnTimer;
+  const pedestriansRef = entityRefs.pedestrians;
+  const pedestrianIdRef = entityRefs.pedestrianId;
+  const pedestrianSpawnTimerRef = entityRefs.pedestrianSpawnTimer;
+  const airplanesRef = entityRefs.airplanes;
+  const airplaneIdRef = entityRefs.airplaneId;
+  const airplaneSpawnTimerRef = entityRefs.airplaneSpawnTimer;
+  const helicoptersRef = entityRefs.helicopters;
+  const helicopterIdRef = entityRefs.helicopterId;
+  const helicopterSpawnTimerRef = entityRefs.helicopterSpawnTimer;
+  const seaplanesRef = entityRefs.seaplanes;
+  const seaplaneIdRef = entityRefs.seaplaneId;
+  const seaplaneSpawnTimerRef = entityRefs.seaplaneSpawnTimer;
+  const boatsRef = entityRefs.boats;
+  const boatIdRef = entityRefs.boatId;
+  const boatSpawnTimerRef = entityRefs.boatSpawnTimer;
+  const bargesRef = entityRefs.barges;
+  const bargeIdRef = entityRefs.bargeId;
+  const bargeSpawnTimerRef = entityRefs.bargeSpawnTimer;
+  const trainsRef = entityRefs.trains;
+  const trainIdRef = entityRefs.trainId;
+  const trainSpawnTimerRef = entityRefs.trainSpawnTimer;
+  const fireworksRef = entityRefs.fireworks;
+  const fireworkIdRef = entityRefs.fireworkId;
+  const fireworkSpawnTimerRef = entityRefs.fireworkSpawnTimer;
+  const fireworkShowActiveRef = entityRefs.fireworkShowActive;
+  const fireworkShowStartTimeRef = entityRefs.fireworkShowStartTime;
+  const fireworkLastHourRef = entityRefs.fireworkLastHour;
+  const factorySmogRef = entityRefs.factorySmog;
+  const smogLastGridVersionRef = entityRefs.smogLastGridVersion;
+  const navLightFlashTimerRef = entityRefs.navLightFlashTimer;
+  const crossingFlashTimerRef = entityRefs.crossingFlashTimer;
+  const crossingGateAnglesRef = entityRefs.crossingGateAngles;
+  const crossingPositionsRef = entityRefs.crossingPositions;
+  const crossingKeySetRef = entityRefs.crossingKeySet;
+  const trafficLightTimerRef = entityRefs.trafficLightTimer;
+
+  const zoomRef = viewportRefs.zoom;
+  const isPanningRef = viewportRefs.isPanning;
+  const isPinchZoomingRef = viewportRefs.isPinchZooming;
+  const isWheelScrollingRef = viewportRefs.isWheelScrolling;
+  const wheelScrollTimeoutRef = viewportRefs.wheelScrollTimeout;
+
+  const renderPendingRef = performanceRefs.renderPending;
+  const hoverRenderPendingRef = performanceRefs.hoverRenderPending;
+  const lastHoverStateUpdateRef = performanceRefs.lastHoverStateUpdate;
+  const cachedRoadTileCountRef = performanceRefs.cachedRoadTileCount;
+  const cachedPopulationRef = performanceRefs.cachedPopulation;
+  const gridVersionRef = performanceRefs.gridVersion;
+  const roadAnalysisCacheRef = performanceRefs.roadAnalysisCache;
+  const roadAnalysisCacheVersionRef = performanceRefs.roadAnalysisCacheVersion;
+
+  const hoveredTileRef = hoverRefs.hoveredTile;
+
+  const panCandidateRef = interactionRefs.panCandidate;
+  const keysPressedRef = interactionRefs.keysPressed;
+  const placedRoadTilesRef = interactionRefs.placedRoadTiles;
+  const touchStartRef = interactionRefs.touchStart;
+  const initialPinchDistanceRef = interactionRefs.initialPinchDistance;
+  const initialZoomRef = interactionRefs.initialZoom;
+  const lastTouchCenterRef = interactionRefs.lastTouchCenter;
+
+  const worldStateRef = worldState.worldState;
+
+  // Use extracted render queues hook
+  const { renderQueuesRef, clearRenderQueues, insertionSortByDepth } = useRenderQueues();
+
+  // Use extracted viewport hook
+  const { getMapBounds, clampOffset } = useViewport(gridSize);
+
   const containerRef = useRef<HTMLDivElement>(null);
-  const renderPendingRef = useRef<number | null>(null); // PERF: Track pending render frame
-  const [offset, setOffset] = useState({ x: isMobile ? 200 : 620, y: isMobile ? 100 : 160 });
-  const [isDragging, setIsDragging] = useState(false);
-  const [isPanning, setIsPanning] = useState(false);
-  const isPanningRef = useRef(false); // Ref for animation loop to check panning state
-  const isPinchZoomingRef = useRef(false); // Ref for animation loop to check pinch zoom state
-  const isWheelScrollingRef = useRef(false); // Ref to track wheel/trackpad scrolling
-  const wheelScrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const zoomRef = useRef(isMobile ? 0.6 : 1); // Ref for animation loop to check zoom level
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
-  const panCandidateRef = useRef<{ startX: number; startY: number; gridX: number; gridY: number } | null>(null);
-  const [hoveredTile, setHoveredTile] = useState<{ x: number; y: number } | null>(null);
-  // PERF: Use ref for hover position to avoid React re-renders on every mouse move
-  // The ref is used for immediate hover canvas updates, state is throttled for tooltip display
-  const hoveredTileRef = useRef<{ x: number; y: number } | null>(null);
-  const hoverRenderPendingRef = useRef<number | null>(null);
-  const lastHoverStateUpdateRef = useRef<number>(0);
-  const [hoveredIncident, setHoveredIncident] = useState<{
-    x: number;
-    y: number;
-    type: 'fire' | 'crime';
-    crimeType?: CrimeType;
-    screenX: number;
-    screenY: number;
-  } | null>(null);
-  const [zoom, setZoom] = useState(isMobile ? 0.6 : 1);
-  const carsRef = useRef<Car[]>([]);
-  const carIdRef = useRef(0);
-  const carSpawnTimerRef = useRef(0);
-  const emergencyVehiclesRef = useRef<EmergencyVehicle[]>([]);
-  const emergencyVehicleIdRef = useRef(0);
-  const emergencyDispatchTimerRef = useRef(0);
-  const activeFiresRef = useRef<Set<string>>(new Set()); // Track fires that already have a truck dispatched
-  const activeCrimesRef = useRef<Set<string>>(new Set()); // Track crimes that already have a car dispatched
-  const activeCrimeIncidentsRef = useRef<Map<string, { x: number; y: number; type: CrimeType; timeRemaining: number }>>(new Map()); // Persistent crime incidents
-  const crimeSpawnTimerRef = useRef(0); // Timer for spawning new crime incidents
-  
-  // Pedestrian system refs
-  const pedestriansRef = useRef<Pedestrian[]>([]);
-  const pedestrianIdRef = useRef(0);
-  const pedestrianSpawnTimerRef = useRef(0);
-  
-  // Touch gesture state for mobile
-  const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
-  const initialPinchDistanceRef = useRef<number | null>(null);
-  const initialZoomRef = useRef<number>(zoom);
-  const lastTouchCenterRef = useRef<{ x: number; y: number } | null>(null);
-  
-  // Airplane system refs
-  const airplanesRef = useRef<Airplane[]>([]);
-  const airplaneIdRef = useRef(0);
-  const airplaneSpawnTimerRef = useRef(0);
-
-  // Helicopter system refs
-  const helicoptersRef = useRef<Helicopter[]>([]);
-  const helicopterIdRef = useRef(0);
-  const helicopterSpawnTimerRef = useRef(0);
-
-  // Seaplane system refs
-  const seaplanesRef = useRef<Seaplane[]>([]);
-  const seaplaneIdRef = useRef(0);
-  const seaplaneSpawnTimerRef = useRef(0);
-
-  // Boat system refs
-  const boatsRef = useRef<Boat[]>([]);
-  const boatIdRef = useRef(0);
-  const boatSpawnTimerRef = useRef(0);
-
-  // Barge system refs (ocean cargo ships)
-  const bargesRef = useRef<Barge[]>([]);
-  const bargeIdRef = useRef(0);
-  const bargeSpawnTimerRef = useRef(0);
-
-  // Train system refs
-  const trainsRef = useRef<Train[]>([]);
-  const trainIdRef = useRef(0);
-  const trainSpawnTimerRef = useRef(0);
-
-  // Navigation light flash timer for planes/helicopters/boats at night
-  const navLightFlashTimerRef = useRef(0);
-
-  // Railroad crossing state
-  const crossingFlashTimerRef = useRef(0);
-  const crossingGateAnglesRef = useRef<Map<number, number>>(new Map()); // key = y * gridSize + x, value = angle (0=open, 90=closed)
-  const crossingPositionsRef = useRef<{x: number, y: number}[]>([]); // Cached crossing positions for O(1) iteration
-  const crossingKeySetRef = useRef<Set<number>>(new Set()); // PERF: Reused Set to avoid allocation per frame
-
-  // Firework system refs
-  const fireworksRef = useRef<Firework[]>([]);
-  const fireworkIdRef = useRef(0);
-  const fireworkSpawnTimerRef = useRef(0);
-  const fireworkShowActiveRef = useRef(false);
-  const fireworkShowStartTimeRef = useRef(0);
-  const fireworkLastHourRef = useRef(-1); // Track hour changes to detect night transitions
-
-  // Factory smog system refs
-  const factorySmogRef = useRef<FactorySmog[]>([]);
-  const smogLastGridVersionRef = useRef(-1); // Track when to rebuild factory list
-
-  // Traffic light system timer (cumulative time for cycling through states)
-  const trafficLightTimerRef = useRef(0);
-
-  // Performance: Cache expensive grid calculations
-  const cachedRoadTileCountRef = useRef<{ count: number; gridVersion: number }>({ count: 0, gridVersion: -1 });
-  const cachedPopulationRef = useRef<{ count: number; gridVersion: number }>({ count: 0, gridVersion: -1 });
-  const gridVersionRef = useRef(0);
-  
-  // Performance: Cache road merge analysis (expensive calculation done per-road-tile)
-  const roadAnalysisCacheRef = useRef<Map<string, ReturnType<typeof analyzeMergedRoad>>>(new Map());
-  const roadAnalysisCacheVersionRef = useRef(-1);
 
   // LIGHTING CACHE: Pre-compute all light sources based on grid (not viewport)
   // Uses useMemo for synchronous, dependency-tracked caching
@@ -359,41 +379,6 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     }
     return lights;
   }, [grid, gridSize]);
-
-  // PERF: Render queue arrays cached across frames to reduce GC pressure
-  // These are cleared at the start of each render frame with .length = 0
-  type BuildingDrawItem = { screenX: number; screenY: number; tile: Tile; depth: number };
-  type OverlayDrawItem = { screenX: number; screenY: number; tile: Tile };
-  const renderQueuesRef = useRef({
-    buildingQueue: [] as BuildingDrawItem[],
-    waterQueue: [] as BuildingDrawItem[],
-    roadQueue: [] as BuildingDrawItem[],
-    railQueue: [] as BuildingDrawItem[],
-    beachQueue: [] as BuildingDrawItem[],
-    baseTileQueue: [] as BuildingDrawItem[],
-    greenBaseTileQueue: [] as BuildingDrawItem[],
-    overlayQueue: [] as OverlayDrawItem[],
-  });
-
-  const worldStateRef = useRef<WorldRenderState>({
-    grid,
-    gridSize,
-    offset,
-    zoom,
-    speed,
-    canvasSize: { width: 1200, height: 800 },
-  });
-  const [roadDrawDirection, setRoadDrawDirection] = useState<'h' | 'v' | null>(null);
-  const placedRoadTilesRef = useRef<Set<string>>(new Set());
-  // Track progressive image loading - start true to render immediately with placeholders
-  const [imagesLoaded, setImagesLoaded] = useState(true);
-  // Counter to trigger re-renders when new images become available
-  const [imageLoadVersion, setImageLoadVersion] = useState(0);
-  const [canvasSize, setCanvasSize] = useState({ width: 1200, height: 800 });
-  const [dragStartTile, setDragStartTile] = useState<{ x: number; y: number } | null>(null);
-  const [dragEndTile, setDragEndTile] = useState<{ x: number; y: number } | null>(null);
-  const [cityConnectionDialog, setCityConnectionDialog] = useState<{ direction: 'north' | 'south' | 'east' | 'west' } | null>(null);
-  const keysPressedRef = useRef<Set<string>>(new Set());
 
   // Only zoning tools show the grid/rectangle selection visualization
   const showsDragGrid = ['zone_residential', 'zone_commercial', 'zone_industrial', 'zone_dezone'].includes(selectedTool);
@@ -1008,17 +993,9 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     const visibleMaxSum = Math.min(gridSize * 2 - 2, Math.ceil((viewBottom + TILE_HEIGHT) * 2 / TILE_HEIGHT));
     
     // PERF: Use cached render queue arrays to avoid GC pressure
-    // Clear arrays by setting length = 0 (much faster than recreating)
+    // Clear arrays using hook function
+    clearRenderQueues();
     const queues = renderQueuesRef.current;
-    queues.buildingQueue.length = 0;
-    queues.waterQueue.length = 0;
-    queues.roadQueue.length = 0;
-    queues.railQueue.length = 0;
-    queues.beachQueue.length = 0;
-    queues.baseTileQueue.length = 0;
-    queues.greenBaseTileQueue.length = 0;
-    queues.overlayQueue.length = 0;
-
     const buildingQueue = queues.buildingQueue;
     const waterQueue = queues.waterQueue;
     const roadQueue = queues.roadQueue;
@@ -1027,21 +1004,8 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     const baseTileQueue = queues.baseTileQueue;
     const greenBaseTileQueue = queues.greenBaseTileQueue;
     const overlayQueue = queues.overlayQueue;
-    
-    // PERF: Insertion sort for nearly-sorted arrays (O(n) vs O(n log n) for .sort())
-    // Since tiles are iterated in diagonal order, queues are already nearly sorted
-    function insertionSortByDepth<T extends { depth: number }>(arr: T[]): void {
-      for (let i = 1; i < arr.length; i++) {
-        const current = arr[i];
-        let j = i - 1;
-        // Only move elements that are strictly greater (maintains stability)
-        while (j >= 0 && arr[j].depth > current.depth) {
-          arr[j + 1] = arr[j];
-          j--;
-        }
-        arr[j + 1] = current;
-      }
-    }
+
+    // insertionSortByDepth now comes from useRenderQueues hook (see above)
     
     // Helper function to check if a tile is adjacent to water (uses pre-computed metadata for O(1) lookup)
     function isAdjacentToWater(gridX: number, gridY: number): boolean {
@@ -2366,7 +2330,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
               };
             } else {
               // getSpriteCoords handles building type to sprite key mapping
-              coords = getSpriteCoords(buildingType, sheetWidth, sheetHeight);
+              coords = getSpriteCoords(buildingType, sheetWidth, sheetHeight, activePack);
               
               // Special cropping for factory_large base sprite - crop bottom to remove asset below
               if (buildingType === 'factory_large' && coords) {
@@ -3123,79 +3087,27 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
   
   // PERF: Ref-based hover canvas drawing function - avoids React re-render overhead
   // This is called directly from mouse move handler via requestAnimationFrame
+  // Use extracted hover canvas renderer
   const drawHoverCanvas = useCallback(() => {
     const canvas = hoverCanvasRef.current;
     if (!canvas) return;
 
-    // PERF: Use alpha: true and desynchronized: true for better performance
-    // desynchronized reduces latency by not waiting for the event loop
     const ctx = canvas.getContext('2d', { alpha: true, desynchronized: true });
     if (!ctx) return;
 
-    const dpr = window.devicePixelRatio || 1;
-    const currentOffset = offset;
-    const currentZoom = zoom;
-
-    // Don't show hover highlight while panning or scrolling - check refs for immediate state
-    const currentHover = (isPanningRef.current || isWheelScrollingRef.current) ? null : hoveredTileRef.current;
-
-    // Clear the hover canvas
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Apply transform (same as main canvas)
-    ctx.scale(dpr, dpr);
-    ctx.translate(currentOffset.x, currentOffset.y);
-    ctx.scale(currentZoom, currentZoom);
-
-    // Helper to draw highlight diamond
-    const drawHighlight = (screenX: number, screenY: number, color: string = 'rgba(255, 255, 255, 0.25)', strokeColor: string = '#ffffff') => {
-      const w = TILE_WIDTH;
-      const h = TILE_HEIGHT;
-
-      // Draw semi-transparent fill
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.moveTo(screenX + w / 2, screenY);
-      ctx.lineTo(screenX + w, screenY + h / 2);
-      ctx.lineTo(screenX + w / 2, screenY + h);
-      ctx.lineTo(screenX, screenY + h / 2);
-      ctx.closePath();
-      ctx.fill();
-
-      // Draw border
-      ctx.strokeStyle = strokeColor;
-      ctx.lineWidth = 2;
-      ctx.stroke();
-    };
-
-    // Draw hovered tile highlight (from ref, not state) - only when not panning
-    if (currentHover && currentHover.x >= 0 && currentHover.x < gridSize && currentHover.y >= 0 && currentHover.y < gridSize) {
-      const { screenX, screenY } = gridToScreen(currentHover.x, currentHover.y, 0, 0);
-      drawHighlight(screenX, screenY);
-    }
-
-    // Draw selected tile highlight (including multi-tile buildings)
-    if (selectedTile && selectedTile.x >= 0 && selectedTile.x < gridSize && selectedTile.y >= 0 && selectedTile.y < gridSize) {
-      const selectedOrigin = grid[selectedTile.y]?.[selectedTile.x];
-      if (selectedOrigin) {
-        const selectedSize = getBuildingSize(selectedOrigin.building.type);
-        // Draw highlight for each tile in the building footprint
-        for (let dx = 0; dx < selectedSize.width; dx++) {
-          for (let dy = 0; dy < selectedSize.height; dy++) {
-            const tx = selectedTile.x + dx;
-            const ty = selectedTile.y + dy;
-            if (tx >= 0 && tx < gridSize && ty >= 0 && ty < gridSize) {
-              const { screenX, screenY } = gridToScreen(tx, ty, 0, 0);
-              drawHighlight(screenX, screenY, 'rgba(100, 200, 255, 0.3)', '#60a5fa');
-            }
-          }
-        }
-      }
-    }
-
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-  }, [offset, zoom, gridSize, grid, selectedTile]);
+    drawHoverCanvasUtil({
+      ctx,
+      canvas,
+      grid,
+      gridSize,
+      offset,
+      zoom,
+      hoveredTile: (isPanningRef.current || isWheelScrollingRef.current) ? null : hoveredTileRef.current,
+      selectedTile,
+      isPanning: isPanningRef.current,
+      isWheelScrolling: isWheelScrollingRef.current,
+    });
+  }, [grid, gridSize, offset, zoom, selectedTile]);
 
   // PERF: Request hover canvas redraw without triggering React re-render
   // At night (when lighting canvas is complex), throttle hover updates more aggressively
@@ -3232,246 +3144,24 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
   }, [requestHoverCanvasRedraw]);
 
   // Draw lighting overlay - called from animation loop for perfect sync
+  // Use extracted lighting renderer
   const drawLighting = useCallback(() => {
     const canvas = lightingCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // PERF: Hide lighting during panning/zooming on mobile for better performance
-    if (isMobile && (isPanningRef.current || isPinchZoomingRef.current)) {
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      return;
-    }
-
-    const currentZoom = worldStateRef.current.zoom;
-    const currentOffset = worldStateRef.current.offset;
-    const dpr = window.devicePixelRatio || 1;
-
-    // Calculate darkness based on visualHour (0-23)
-    const getDarkness = (h: number): number => {
-      if (h >= 7 && h < 18) return 0;
-      if (h >= 5 && h < 7) return 1 - (h - 5) / 2;
-      if (h >= 18 && h < 20) return (h - 18) / 2;
-      return 1;
-    };
-
-    const darkness = getDarkness(visualHour);
-
-    // Clear canvas first
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // If it's full daylight, just clear and return
-    if (darkness <= 0.01) return;
-
-    // Get ambient color based on time
-    const getAmbientColor = (h: number): { r: number; g: number; b: number } => {
-      if (h >= 7 && h < 18) return { r: 255, g: 255, b: 255 };
-      if (h >= 5 && h < 7) {
-        const t = (h - 5) / 2;
-        return { r: Math.round(60 + 40 * t), g: Math.round(40 + 30 * t), b: Math.round(70 + 20 * t) };
-      }
-      if (h >= 18 && h < 20) {
-        const t = (h - 18) / 2;
-        return { r: Math.round(100 - 40 * t), g: Math.round(70 - 30 * t), b: Math.round(90 - 20 * t) };
-      }
-      return { r: 20, g: 30, b: 60 };
-    };
-
-    const ambient = getAmbientColor(visualHour);
-
-    // Apply darkness overlay
-    const alpha = darkness * 0.6;
-    ctx.fillStyle = `rgba(${ambient.r}, ${ambient.g}, ${ambient.b}, ${alpha})`;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // Calculate viewport bounds for filtering cached lights
-    const viewWidth = canvas.width / (dpr * currentZoom);
-    const viewHeight = canvas.height / (dpr * currentZoom);
-    const viewLeft = -currentOffset.x / currentZoom - TILE_WIDTH * 3;
-    const viewTop = -currentOffset.y / currentZoom - TILE_HEIGHT * 6;
-    const viewRight = viewWidth - currentOffset.x / currentZoom + TILE_WIDTH * 3;
-    const viewBottom = viewHeight - currentOffset.y / currentZoom + TILE_HEIGHT * 3;
-
-    const lightIntensity = Math.min(1, darkness * 1.2);
-
-    // Deterministic pseudo-random function (stable across renders)
-    const pseudoRandom = (seed: number, n: number) => {
-      const s = Math.sin(seed + n * 12.9898) * 43758.5453;
-      return s - Math.floor(s);
-    };
-
-    // Filter visible lights from cache
-    const visibleLights: CachedLight[] = [];
-    const visibleSpecialGlows: CachedLight[] = [];
-
-    // Only sample on mobile or when extremely zoomed out
-    const shouldSample = isMobile || currentZoom < 0.35;
-    const roadSampleMod = isMobile ? 2 : 3;
-    const buildingSampleMod = isMobile ? 2 : 2;
-
-    for (const light of lightingCache) {
-      // Viewport culling using pre-computed screen positions
-      if (light.screenX + TILE_WIDTH < viewLeft || light.screenX > viewRight ||
-          light.screenY + TILE_HEIGHT * 3 < viewTop || light.screenY > viewBottom) {
-        continue;
-      }
-
-      // Only sample when necessary for performance
-      if (shouldSample) {
-        const tileIndex = light.gridX + light.gridY;
-        if (light.type === 'road') {
-          if (tileIndex % roadSampleMod !== 0) continue;
-        } else {
-          if (tileIndex % buildingSampleMod !== 0) continue;
-        }
-      }
-
-      visibleLights.push(light);
-
-      // Collect special glows (always show these when in view)
-      if (light.isSpecial && !isMobile && currentZoom >= 0.4) {
-        visibleSpecialGlows.push(light);
-      }
-    }
-
-    // Draw light cutouts (destination-out)
-    ctx.globalCompositeOperation = 'destination-out';
-    ctx.save();
-    ctx.scale(dpr * currentZoom, dpr * currentZoom);
-    ctx.translate(currentOffset.x / currentZoom, currentOffset.y / currentZoom);
-
-    for (const light of visibleLights) {
-      const tileCenterX = light.screenX + TILE_WIDTH / 2;
-      const tileCenterY = light.screenY + TILE_HEIGHT / 2;
-
-      if (light.type === 'road') {
-        const lightRadius = 28;
-        const gradient = ctx.createRadialGradient(tileCenterX, tileCenterY, 0, tileCenterX, tileCenterY, lightRadius);
-        gradient.addColorStop(0, `rgba(255, 255, 255, ${0.75 * lightIntensity})`);
-        gradient.addColorStop(0.4, `rgba(255, 255, 255, ${0.4 * lightIntensity})`);
-        gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
-        ctx.fillStyle = gradient;
-        ctx.beginPath();
-        ctx.arc(tileCenterX, tileCenterY, lightRadius, 0, Math.PI * 2);
-        ctx.fill();
-      } else if (light.type === 'building' && light.buildingType) {
-        const buildingType = light.buildingType;
-        const isResidential = residentialTypes.has(buildingType);
-        const isCommercial = commercialTypes.has(buildingType);
-        const glowStrength = isCommercial ? 0.9 : isResidential ? 0.65 : 0.75;
-
-        // Window lights - only at high zoom
-        if (!isMobile && currentZoom >= 0.7) {
-          let numWindows = 1;
-          if (buildingType.includes('medium') || buildingType.includes('low')) numWindows = 2;
-          if (buildingType.includes('high') || buildingType === 'mall') numWindows = 3;
-          if (buildingType === 'mansion' || buildingType === 'office_high') numWindows = 2;
-
-          const windowSize = 5;
-          const buildingHeight = -18;
-
-          for (let i = 0; i < numWindows; i++) {
-            const isLit = pseudoRandom(light.seed, i) < (isResidential ? 0.55 : 0.75);
-            if (!isLit) continue;
-
-            const wx = tileCenterX + (pseudoRandom(light.seed, i + 10) - 0.5) * 22;
-            const wy = tileCenterY + buildingHeight + (pseudoRandom(light.seed, i + 20) - 0.5) * 16;
-
-            const gradient = ctx.createRadialGradient(wx, wy, 0, wx, wy, windowSize * 2.5);
-            gradient.addColorStop(0, `rgba(255, 255, 255, ${glowStrength * lightIntensity})`);
-            gradient.addColorStop(0.5, `rgba(255, 255, 255, ${glowStrength * 0.4 * lightIntensity})`);
-            gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
-            ctx.fillStyle = gradient;
-            ctx.beginPath();
-            ctx.arc(wx, wy, windowSize * 2.5, 0, Math.PI * 2);
-            ctx.fill();
-          }
-        }
-
-        // Ground glow
-        const groundGlowRadius = isMobile ? TILE_WIDTH * 0.5 : TILE_WIDTH * 0.6;
-        const groundGlowAlpha = isMobile ? 0.4 : 0.28;
-        const groundGlow = ctx.createRadialGradient(
-          tileCenterX, tileCenterY + TILE_HEIGHT / 4, 0,
-          tileCenterX, tileCenterY + TILE_HEIGHT / 4, groundGlowRadius
-        );
-        groundGlow.addColorStop(0, `rgba(255, 255, 255, ${groundGlowAlpha * lightIntensity})`);
-        groundGlow.addColorStop(1, 'rgba(255, 255, 255, 0)');
-        ctx.fillStyle = groundGlow;
-        ctx.beginPath();
-        ctx.ellipse(tileCenterX, tileCenterY + TILE_HEIGHT / 4, groundGlowRadius, TILE_HEIGHT / 2.5, 0, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-
-    ctx.restore();
-
-    // Draw colored glows for special buildings and road lights
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.save();
-    ctx.scale(dpr * currentZoom, dpr * currentZoom);
-    ctx.translate(currentOffset.x / currentZoom, currentOffset.y / currentZoom);
-
-    // Road colored glows (warm street light color)
-    if (!isMobile && currentZoom >= 0.6) {
-      for (const light of visibleLights) {
-        if (light.type !== 'road') continue;
-        const tileCenterX = light.screenX + TILE_WIDTH / 2;
-        const tileCenterY = light.screenY + TILE_HEIGHT / 2;
-
-        const gradient = ctx.createRadialGradient(tileCenterX, tileCenterY, 0, tileCenterX, tileCenterY, 20);
-        gradient.addColorStop(0, `rgba(255, 210, 130, ${0.3 * lightIntensity})`);
-        gradient.addColorStop(0.5, `rgba(255, 190, 100, ${0.15 * lightIntensity})`);
-        gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
-        ctx.fillStyle = gradient;
-        ctx.beginPath();
-        ctx.arc(tileCenterX, tileCenterY, 20, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-
-    // Special building glows (hospital, fire station, etc.)
-    for (const light of visibleSpecialGlows) {
-      const tileCenterX = light.screenX + TILE_WIDTH / 2;
-      const tileCenterY = light.screenY + TILE_HEIGHT / 2;
-
-      let glowColor: { r: number; g: number; b: number } | null = null;
-      let glowRadius = 20;
-
-      if (light.specialType === 'hospital') {
-        glowColor = { r: 255, g: 80, b: 80 };
-        glowRadius = 25;
-      } else if (light.specialType === 'fire_station') {
-        glowColor = { r: 255, g: 100, b: 50 };
-        glowRadius = 22;
-      } else if (light.specialType === 'police_station') {
-        glowColor = { r: 60, g: 140, b: 255 };
-        glowRadius = 22;
-      } else if (light.specialType === 'power_plant') {
-        glowColor = { r: 255, g: 200, b: 50 };
-        glowRadius = 30;
-      }
-
-      if (glowColor) {
-        const gradient = ctx.createRadialGradient(
-          tileCenterX, tileCenterY - 15, 0,
-          tileCenterX, tileCenterY - 15, glowRadius
-        );
-        gradient.addColorStop(0, `rgba(${glowColor.r}, ${glowColor.g}, ${glowColor.b}, ${0.55 * lightIntensity})`);
-        gradient.addColorStop(0.5, `rgba(${glowColor.r}, ${glowColor.g}, ${glowColor.b}, ${0.25 * lightIntensity})`);
-        gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
-        ctx.fillStyle = gradient;
-        ctx.beginPath();
-        ctx.arc(tileCenterX, tileCenterY - 15, glowRadius, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-
-    ctx.restore();
-    ctx.globalCompositeOperation = 'source-over';
+    drawLightingUtil({
+      ctx,
+      canvas,
+      offset: worldStateRef.current.offset,
+      zoom: worldStateRef.current.zoom,
+      visualHour,
+      lightingCache,
+      isMobile,
+      isPanning: isPanningRef.current,
+      isPinchZooming: isPinchZoomingRef.current,
+    });
   }, [lightingCache, visualHour, isMobile]);
 
   // Animate decorative car traffic AND emergency vehicles on top of the base canvas
@@ -3654,15 +3344,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     [offset, gridSize, selectedTool, placeAtTile, zoom, showsDragGrid, supportsDragPlace, setSelectedTile, findBuildingOrigin, grid, canvasSize, isPanning, dragStart, isDragging, dragStartTile, dragEndTile, roadDrawDirection, requestHoverCanvasRedraw, checkAndDiscoverCities]
   );
 
-  // Calculate camera bounds based on grid size
-  const getMapBounds = useCallback((currentZoom: number, canvasW: number, canvasH: number) => {
-    return getMapBoundsUtil(gridSize, currentZoom, canvasW, canvasH);
-  }, [gridSize]);
-
-  // Clamp offset to keep camera within reasonable bounds
-  const clampOffset = useCallback((newOffset: { x: number; y: number }, currentZoom: number) => {
-    return clampOffsetUtil(newOffset, currentZoom, gridSize, canvasSize.width, canvasSize.height);
-  }, [gridSize, canvasSize.width, canvasSize.height]);
+  // getMapBounds and clampOffset now come from useViewport hook (see above)
 
   // Handle minimap navigation - center the view on the target tile
   useEffect(() => {

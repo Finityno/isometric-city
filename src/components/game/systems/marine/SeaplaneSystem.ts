@@ -1,5 +1,5 @@
 import { useCallback, useRef } from 'react';
-import { Seaplane, WorldRenderState, TILE_WIDTH, TILE_HEIGHT, WakeParticle, ContrailParticle } from './types';
+import { Seaplane, WorldRenderState, TILE_WIDTH, TILE_HEIGHT, WakeParticle, ContrailParticle } from '../../types';
 import {
   SEAPLANE_MIN_POPULATION,
   SEAPLANE_MIN_BAY_SIZE,
@@ -20,8 +20,8 @@ import {
   CONTRAIL_SPAWN_INTERVAL,
   WAKE_MAX_AGE,
   WAKE_SPAWN_INTERVAL,
-} from './constants';
-import { findBays, getRandomBayTile, isOverWater, BayInfo } from './gridFinders';
+} from '../../constants';
+import { findBays, getRandomBayTile, isOverWater, BayInfo } from '../../gridFinders';
 import { clamp, normalizeAngleFast } from '@/lib/utils/math';
 
 // Pre-computed constants to avoid repeated calculations

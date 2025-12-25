@@ -1,5 +1,5 @@
 import { useCallback, useRef } from 'react';
-import { Boat, TourWaypoint, WorldRenderState, WakeParticle, TILE_WIDTH, TILE_HEIGHT } from './types';
+import { Boat, TourWaypoint, WorldRenderState, WakeParticle, TILE_WIDTH, TILE_HEIGHT } from '../../types';
 import {
   BOAT_COLORS,
   BOAT_MIN_ZOOM,
@@ -8,9 +8,9 @@ import {
   MAX_BOATS,
   WAKE_MAX_AGE,
   WAKE_SPAWN_INTERVAL,
-} from './constants';
-import { gridToScreen } from './utils';
-import { findMarinasAndPiers, findAdjacentWaterTile, generateTourWaypoints, DockInfo } from './gridFinders';
+} from '../../constants';
+import { gridToScreen } from '../../utils';
+import { findMarinasAndPiers, findAdjacentWaterTile, generateTourWaypoints, DockInfo } from '../../gridFinders';
 import { Tile } from '@/types/game';
 import { normalizeAngleDiff } from '@/lib/utils/math';
 

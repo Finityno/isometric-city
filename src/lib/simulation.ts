@@ -23,6 +23,70 @@ import {
 } from '@/data';
 import { generateCityName, generateWaterName } from './names';
 import { isMobile } from 'react-device-detect';
+import {
+  createInitialBudget,
+  updateBudgetFromMetrics,
+  calculateExpenses,
+  calculateIncome,
+  calculateTaxMultiplier,
+  calculateTaxAdditiveModifier,
+  updateEffectiveTaxRate,
+  calculateDemand,
+  type GridMetrics,
+} from './simulation/economy';
+import {
+  createServiceCoverage,
+  calculateServiceCoverage,
+  invalidateServiceBuildingCache,
+  SERVICE_CONFIG,
+  SERVICE_BUILDING_TYPES,
+} from './simulation/services';
+import {
+  perlinNoise,
+  generateLakes,
+  generateOceans,
+  generateAdjacentCities,
+  createTile,
+  createBuilding,
+  NO_CONSTRUCTION_TYPES,
+} from './simulation/terrain';
+import {
+  requiresWaterAdjacency,
+  getWaterAdjacency,
+  getRoadAdjacency,
+  isStarterBuilding as isStarterBuildingImpl,
+  getBuildingSize,
+  canPlaceMultiTileBuilding,
+  canSpawnMultiTileBuilding,
+  findBuildingOrigin,
+  applyBuildingFootprint,
+  placeBuilding as placeBuildingImpl,
+  bulldozeTile as bulldozeTileImpl,
+  placeSubway as placeSubwayImpl,
+  evolveBuilding as evolveBuildingImpl,
+  findFootprintIncludingTile,
+} from './simulation/buildings';
+
+// Re-export for external usage (e.g., overlay rendering)
+export { SERVICE_CONFIG, invalidateServiceBuildingCache };
+
+// Re-export building functions for backwards compatibility
+export {
+  requiresWaterAdjacency,
+  getWaterAdjacency,
+  getRoadAdjacency,
+  getBuildingSize,
+  findBuildingOrigin,
+  findFootprintIncludingTile,
+} from './simulation/buildings';
+
+// Wrapper functions that delegate to extracted modules
+// These maintain the exact same signatures for backwards compatibility
+export const isStarterBuilding = isStarterBuildingImpl;
+export const placeBuilding = placeBuildingImpl;
+export const bulldozeTile = bulldozeTileImpl;
+export const placeSubway = placeSubwayImpl;
+const evolveBuilding = evolveBuildingImpl;
 
 // Default grid size for new games
 export const DEFAULT_GRID_SIZE = isMobile ? 50 : 70;
@@ -35,388 +99,6 @@ function isFarmBuilding(x: number, y: number, buildingType: string): boolean {
   const seed = (x * 31 + y * 17) % 100;
   // ~50% chance to be a farm variant (when seed < 50)
   return seed < 50;
-}
-
-// Check if a building is a "starter" type that can operate without utilities
-// This includes all factory_small (farms AND small factories), small houses, and small shops
-// All starter buildings represent small-scale, self-sufficient operations that don't need
-// municipal power/water infrastructure to begin operating
-function isStarterBuilding(x: number, y: number, buildingType: string): boolean {
-  if (buildingType === 'house_small' || buildingType === 'shop_small') return true;
-  // ALL factory_small are starters - they can spawn without utilities
-  // Some will render as farms (~50%), others as small factories
-  // Both represent small-scale operations that can function off-grid
-  if (buildingType === 'factory_small') return true;
-  return false;
-}
-
-// Perlin-like noise for terrain generation
-function noise2D(x: number, y: number, seed: number = 42): number {
-  const n = Math.sin(x * 12.9898 + y * 78.233 + seed) * 43758.5453123;
-  return n - Math.floor(n);
-}
-
-function smoothNoise(x: number, y: number, seed: number): number {
-  const corners = (noise2D(x - 1, y - 1, seed) + noise2D(x + 1, y - 1, seed) +
-    noise2D(x - 1, y + 1, seed) + noise2D(x + 1, y + 1, seed)) / 16;
-  const sides = (noise2D(x - 1, y, seed) + noise2D(x + 1, y, seed) +
-    noise2D(x, y - 1, seed) + noise2D(x, y + 1, seed)) / 8;
-  const center = noise2D(x, y, seed) / 4;
-  return corners + sides + center;
-}
-
-function interpolatedNoise(x: number, y: number, seed: number): number {
-  const intX = Math.floor(x);
-  const fracX = x - intX;
-  const intY = Math.floor(y);
-  const fracY = y - intY;
-
-  const v1 = smoothNoise(intX, intY, seed);
-  const v2 = smoothNoise(intX + 1, intY, seed);
-  const v3 = smoothNoise(intX, intY + 1, seed);
-  const v4 = smoothNoise(intX + 1, intY + 1, seed);
-
-  const i1 = v1 * (1 - fracX) + v2 * fracX;
-  const i2 = v3 * (1 - fracX) + v4 * fracX;
-
-  return i1 * (1 - fracY) + i2 * fracY;
-}
-
-function perlinNoise(x: number, y: number, seed: number, octaves: number = 4): number {
-  let total = 0;
-  let frequency = 0.05;
-  let amplitude = 1;
-  let maxValue = 0;
-
-  for (let i = 0; i < octaves; i++) {
-    total += interpolatedNoise(x * frequency, y * frequency, seed + i * 100) * amplitude;
-    maxValue += amplitude;
-    amplitude *= 0.5;
-    frequency *= 2;
-  }
-
-  return total / maxValue;
-}
-
-// Generate 2-3 large, round lakes and return water bodies
-function generateLakes(grid: Tile[][], size: number, seed: number): WaterBody[] {
-  // Use noise to find potential lake centers - look for low points
-  const lakeNoise = (x: number, y: number) => perlinNoise(x, y, seed + 1000, 3);
-  
-  // Find lake seed points (local minimums in noise)
-  const lakeCenters: { x: number; y: number; noise: number }[] = [];
-  const minDistFromEdge = Math.max(8, Math.floor(size * 0.15)); // Keep lakes away from ocean edges
-  const minDistBetweenLakes = Math.max(size * 0.2, 10); // Adaptive but ensure minimum separation
-  
-  // Collect all potential lake centers with adaptive threshold
-  // Start with a lenient threshold and tighten if we find too many
-  let threshold = 0.5;
-  let attempts = 0;
-  const maxAttempts = 3;
-  
-  while (lakeCenters.length < 2 && attempts < maxAttempts) {
-    lakeCenters.length = 0; // Reset for this attempt
-    
-    for (let y = minDistFromEdge; y < size - minDistFromEdge; y++) {
-      for (let x = minDistFromEdge; x < size - minDistFromEdge; x++) {
-        const noiseVal = lakeNoise(x, y);
-        
-        // Check if this is a good lake center (low noise value)
-        if (noiseVal < threshold) {
-          // Check distance from other lake centers
-          let tooClose = false;
-          for (const center of lakeCenters) {
-            const dist = Math.sqrt((x - center.x) ** 2 + (y - center.y) ** 2);
-            if (dist < minDistBetweenLakes) {
-              tooClose = true;
-              break;
-            }
-          }
-          
-          if (!tooClose) {
-            lakeCenters.push({ x, y, noise: noiseVal });
-          }
-        }
-      }
-    }
-    
-    // If we found enough centers, break
-    if (lakeCenters.length >= 2) break;
-    
-    // Otherwise, relax the threshold for next attempt
-    threshold += 0.1;
-    attempts++;
-  }
-  
-  // If still no centers found, force create at least 2 lakes at strategic positions
-  if (lakeCenters.length === 0) {
-    // Place lakes at strategic positions, ensuring they're far enough from edges
-    const safeZone = minDistFromEdge + 5; // Extra buffer for lake growth
-    const quarterSize = Math.max(safeZone, Math.floor(size / 4));
-    const threeQuarterSize = Math.min(size - safeZone, Math.floor(size * 3 / 4));
-    lakeCenters.push(
-      { x: quarterSize, y: quarterSize, noise: 0 },
-      { x: threeQuarterSize, y: threeQuarterSize, noise: 0 }
-    );
-  } else if (lakeCenters.length === 1) {
-    // If only one center found, add another at a safe distance
-    const existing = lakeCenters[0];
-    const safeZone = minDistFromEdge + 5;
-    const quarterSize = Math.max(safeZone, Math.floor(size / 4));
-    const threeQuarterSize = Math.min(size - safeZone, Math.floor(size * 3 / 4));
-    let newX = existing.x > size / 2 ? quarterSize : threeQuarterSize;
-    let newY = existing.y > size / 2 ? quarterSize : threeQuarterSize;
-    lakeCenters.push({ x: newX, y: newY, noise: 0 });
-  }
-  
-  // Sort by noise value (lowest first) and pick 2-3 best candidates
-  lakeCenters.sort((a, b) => a.noise - b.noise);
-  const numLakes = 2 + Math.floor(Math.random() * 2); // 2 or 3 lakes
-  const selectedCenters = lakeCenters.slice(0, Math.min(numLakes, lakeCenters.length));
-  
-  const waterBodies: WaterBody[] = [];
-  const usedLakeNames = new Set<string>();
-  
-  // Grow lakes from each center using radial expansion for rounder shapes
-  for (const center of selectedCenters) {
-    // Target size: 40-80 tiles for bigger lakes
-    const targetSize = 40 + Math.floor(Math.random() * 41);
-    const lakeTiles: { x: number; y: number }[] = [{ x: center.x, y: center.y }];
-    const candidates: { x: number; y: number; dist: number; noise: number }[] = [];
-    
-    // Add initial neighbors as candidates
-    const directions = [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [-1, 1], [1, -1], [1, 1]];
-    for (const [dx, dy] of directions) {
-      const nx = center.x + dx;
-      const ny = center.y + dy;
-      if (nx >= minDistFromEdge && nx < size - minDistFromEdge && 
-          ny >= minDistFromEdge && ny < size - minDistFromEdge) {
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        const noise = lakeNoise(nx, ny);
-        candidates.push({ x: nx, y: ny, dist, noise });
-      }
-    }
-    
-    // Grow lake by adding adjacent tiles, prioritizing:
-    // 1. Closer to center (for rounder shape)
-    // 2. Lower noise values (for organic shape)
-    while (lakeTiles.length < targetSize && candidates.length > 0) {
-      // Sort by distance from center first, then noise
-      candidates.sort((a, b) => {
-        if (Math.abs(a.dist - b.dist) < 0.5) {
-          return a.noise - b.noise; // If similar distance, prefer lower noise
-        }
-        return a.dist - b.dist; // Prefer closer tiles for rounder shape
-      });
-      
-      // Pick from top candidates (closest/lowest noise)
-      const pickIndex = Math.floor(Math.random() * Math.min(5, candidates.length));
-      const picked = candidates.splice(pickIndex, 1)[0];
-      
-      // Check if already in lake
-      if (lakeTiles.some(t => t.x === picked.x && t.y === picked.y)) continue;
-      
-      // Check if tile is valid (not already water from another lake)
-      if (grid[picked.y][picked.x].building.type === 'water') continue;
-      
-      lakeTiles.push({ x: picked.x, y: picked.y });
-      
-      // Add new neighbors as candidates
-      for (const [dx, dy] of directions) {
-        const nx = picked.x + dx;
-        const ny = picked.y + dy;
-        if (nx >= minDistFromEdge && nx < size - minDistFromEdge && 
-            ny >= minDistFromEdge && ny < size - minDistFromEdge &&
-            !lakeTiles.some(t => t.x === nx && t.y === ny) &&
-            !candidates.some(c => c.x === nx && c.y === ny)) {
-          const dist = Math.sqrt((nx - center.x) ** 2 + (ny - center.y) ** 2);
-          const noise = lakeNoise(nx, ny);
-          candidates.push({ x: nx, y: ny, dist, noise });
-        }
-      }
-    }
-    
-    // Apply lake tiles to grid
-    for (const tile of lakeTiles) {
-      grid[tile.y][tile.x].building = createBuilding('water');
-      grid[tile.y][tile.x].landValue = 60; // Water increases nearby land value
-    }
-    
-    // Calculate center for labeling
-    const avgX = lakeTiles.reduce((sum, t) => sum + t.x, 0) / lakeTiles.length;
-    const avgY = lakeTiles.reduce((sum, t) => sum + t.y, 0) / lakeTiles.length;
-    
-    // Assign a random name to this lake
-    let lakeName = generateWaterName('lake');
-    while (usedLakeNames.has(lakeName)) {
-      lakeName = generateWaterName('lake');
-    }
-    usedLakeNames.add(lakeName);
-    
-    // Add to water bodies list
-    waterBodies.push({
-      id: `lake-${waterBodies.length}`,
-      name: lakeName,
-      type: 'lake',
-      tiles: lakeTiles,
-      centerX: Math.round(avgX),
-      centerY: Math.round(avgY),
-    });
-  }
-  
-  return waterBodies;
-}
-
-// Generate ocean connections on map edges (sometimes) with organic coastlines
-function generateOceans(grid: Tile[][], size: number, seed: number): WaterBody[] {
-  const waterBodies: WaterBody[] = [];
-  const oceanChance = 0.4; // 40% chance per edge
-  
-  // Use noise for coastline variation
-  const coastNoise = (x: number, y: number) => perlinNoise(x, y, seed + 2000, 3);
-  
-  // Check each edge independently
-  const edges: Array<{ side: 'north' | 'east' | 'south' | 'west'; tiles: { x: number; y: number }[] }> = [];
-  
-  // Ocean parameters
-  const baseDepth = Math.max(4, Math.floor(size * 0.12));
-  const depthVariation = Math.max(4, Math.floor(size * 0.08));
-  const maxDepth = Math.floor(size * 0.18);
-  
-  // Helper to generate organic ocean section along an edge
-  const generateOceanEdge = (
-    isHorizontal: boolean,
-    edgePosition: number, // 0 for north/west, size-1 for south/east
-    inwardDirection: 1 | -1 // 1 = increasing coord, -1 = decreasing coord
-  ): { x: number; y: number }[] => {
-    const tiles: { x: number; y: number }[] = [];
-    
-    // Randomize the span of the ocean (40-80% of edge, not full length)
-    const spanStart = Math.floor(size * (0.05 + Math.random() * 0.25));
-    const spanEnd = Math.floor(size * (0.7 + Math.random() * 0.25));
-    
-    for (let i = spanStart; i < spanEnd; i++) {
-      // Use noise to determine depth at this position, with fade at edges
-      const edgeFade = Math.min(
-        (i - spanStart) / 5,
-        (spanEnd - i) / 5,
-        1
-      );
-      
-      // Layer two noise frequencies for more interesting coastline
-      // Higher frequency noise for fine detail, lower for broad shape
-      const coarseNoise = coastNoise(
-        isHorizontal ? i * 0.08 : edgePosition * 0.08,
-        isHorizontal ? edgePosition * 0.08 : i * 0.08
-      );
-      const fineNoise = coastNoise(
-        isHorizontal ? i * 0.25 : edgePosition * 0.25 + 500,
-        isHorizontal ? edgePosition * 0.25 + 500 : i * 0.25
-      );
-      const noiseVal = coarseNoise * 0.6 + fineNoise * 0.4;
-      
-      // Depth varies based on noise and fades at the ends
-      const rawDepth = baseDepth + (noiseVal - 0.5) * depthVariation * 2.5;
-      const localDepth = Math.max(1, Math.min(Math.floor(rawDepth * edgeFade), maxDepth));
-      
-      // Place water tiles from edge inward
-      for (let d = 0; d < localDepth; d++) {
-        const x = isHorizontal ? i : (inwardDirection === 1 ? d : size - 1 - d);
-        const y = isHorizontal ? (inwardDirection === 1 ? d : size - 1 - d) : i;
-        
-        if (x >= 0 && x < size && y >= 0 && y < size && grid[y][x].building.type !== 'water') {
-          grid[y][x].building = createBuilding('water');
-          grid[y][x].landValue = 60;
-          tiles.push({ x, y });
-        }
-      }
-    }
-    
-    return tiles;
-  };
-  
-  // North edge (top, y=0, extends downward)
-  if (Math.random() < oceanChance) {
-    const tiles = generateOceanEdge(true, 0, 1);
-    if (tiles.length > 0) {
-      edges.push({ side: 'north', tiles });
-    }
-  }
-  
-  // South edge (bottom, y=size-1, extends upward)
-  if (Math.random() < oceanChance) {
-    const tiles = generateOceanEdge(true, size - 1, -1);
-    if (tiles.length > 0) {
-      edges.push({ side: 'south', tiles });
-    }
-  }
-  
-  // East edge (right, x=size-1, extends leftward)
-  if (Math.random() < oceanChance) {
-    const tiles = generateOceanEdge(false, size - 1, -1);
-    if (tiles.length > 0) {
-      edges.push({ side: 'east', tiles });
-    }
-  }
-  
-  // West edge (left, x=0, extends rightward)
-  if (Math.random() < oceanChance) {
-    const tiles = generateOceanEdge(false, 0, 1);
-    if (tiles.length > 0) {
-      edges.push({ side: 'west', tiles });
-    }
-  }
-  
-  // Create water body entries for oceans
-  const usedOceanNames = new Set<string>();
-  for (const edge of edges) {
-    if (edge.tiles.length > 0) {
-      const avgX = edge.tiles.reduce((sum, t) => sum + t.x, 0) / edge.tiles.length;
-      const avgY = edge.tiles.reduce((sum, t) => sum + t.y, 0) / edge.tiles.length;
-      
-      let oceanName = generateWaterName('ocean');
-      while (usedOceanNames.has(oceanName)) {
-        oceanName = generateWaterName('ocean');
-      }
-      usedOceanNames.add(oceanName);
-      
-      waterBodies.push({
-        id: `ocean-${edge.side}-${waterBodies.length}`,
-        name: oceanName,
-        type: 'ocean',
-        tiles: edge.tiles,
-        centerX: Math.round(avgX),
-        centerY: Math.round(avgY),
-      });
-    }
-  }
-  
-  return waterBodies;
-}
-
-// Generate adjacent cities - always create one for each direction (undiscovered until road reaches edge)
-function generateAdjacentCities(): AdjacentCity[] {
-  const cities: AdjacentCity[] = [];
-  const directions: Array<'north' | 'south' | 'east' | 'west'> = ['north', 'south', 'east', 'west'];
-  const usedNames = new Set<string>();
-  
-  for (const direction of directions) {
-    let name: string;
-    do {
-      name = generateCityName();
-    } while (usedNames.has(name));
-    usedNames.add(name);
-    
-    cities.push({
-      id: `city-${direction}`,
-      name,
-      direction,
-      connected: false,
-      discovered: false, // Cities are discovered when a road reaches their edge
-    });
-  }
-  
-  return cities;
 }
 
 // Check if there's a road tile at any edge of the map in a given direction
@@ -551,201 +233,7 @@ function isNearWater(grid: Tile[][], x: number, y: number, size: number): boolea
   return false;
 }
 
-// Building types that require water adjacency
-const WATERFRONT_BUILDINGS: BuildingType[] = ['marina_docks_small', 'pier_large'];
-
-// Check if a building type requires water adjacency
-export function requiresWaterAdjacency(buildingType: BuildingType): boolean {
-  return WATERFRONT_BUILDINGS.includes(buildingType);
-}
-
-// Check if a building footprint is adjacent to water (for multi-tile buildings, any edge touching water counts)
-// Returns whether water is found and if the sprite should be flipped to face it
-// In isometric view, sprites can only be normal or horizontally mirrored
-export function getWaterAdjacency(
-  grid: Tile[][],
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  gridSize: number
-): { hasWater: boolean; shouldFlip: boolean } {
-  // In isometric view (looking from SE toward NW):
-  // - The default sprite faces toward the "front" (south-east in world coords)
-  // - To face the opposite direction, we flip horizontally
-  
-  // Check all four edges and track which sides have water
-  let waterOnSouthOrEast = false; // "Front" sides - no flip needed
-  let waterOnNorthOrWest = false; // "Back" sides - flip needed
-  
-  // Check south edge (y + height) - front-right in isometric view
-  for (let dx = 0; dx < width; dx++) {
-    const checkX = x + dx;
-    const checkY = y + height;
-    if (checkY < gridSize && grid[checkY]?.[checkX]?.building.type === 'water') {
-      waterOnSouthOrEast = true;
-      break;
-    }
-  }
-  
-  // Check east edge (x + width) - front-left in isometric view
-  if (!waterOnSouthOrEast) {
-    for (let dy = 0; dy < height; dy++) {
-      const checkX = x + width;
-      const checkY = y + dy;
-      if (checkX < gridSize && grid[checkY]?.[checkX]?.building.type === 'water') {
-        waterOnSouthOrEast = true;
-        break;
-      }
-    }
-  }
-  
-  // Check north edge (y - 1) - back-left in isometric view
-  for (let dx = 0; dx < width; dx++) {
-    const checkX = x + dx;
-    const checkY = y - 1;
-    if (checkY >= 0 && grid[checkY]?.[checkX]?.building.type === 'water') {
-      waterOnNorthOrWest = true;
-      break;
-    }
-  }
-  
-  // Check west edge (x - 1) - back-right in isometric view
-  if (!waterOnNorthOrWest) {
-    for (let dy = 0; dy < height; dy++) {
-      const checkX = x - 1;
-      const checkY = y + dy;
-      if (checkX >= 0 && grid[checkY]?.[checkX]?.building.type === 'water') {
-        waterOnNorthOrWest = true;
-        break;
-      }
-    }
-  }
-  
-  const hasWater = waterOnSouthOrEast || waterOnNorthOrWest;
-  // Only flip if water is on the back sides and NOT on the front sides
-  const shouldFlip = hasWater && waterOnNorthOrWest && !waterOnSouthOrEast;
-  
-  return { hasWater, shouldFlip };
-}
-
-// Check if a building footprint is adjacent to roads and determine flip direction
-// Similar to getWaterAdjacency but for roads - makes buildings face the road
-export function getRoadAdjacency(
-  grid: Tile[][],
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  gridSize: number
-): { hasRoad: boolean; shouldFlip: boolean } {
-  // In isometric view (looking from SE toward NW):
-  // - The default sprite faces toward the "front" (south-east in world coords)
-  // - To face the opposite direction, we flip horizontally
-  
-  // Check all four edges and track which sides have roads
-  let roadOnSouthOrEast = false; // "Front" sides - no flip needed
-  let roadOnNorthOrWest = false; // "Back" sides - flip needed
-  
-  // Check south edge (y + height) - front-right in isometric view
-  for (let dx = 0; dx < width; dx++) {
-    const checkX = x + dx;
-    const checkY = y + height;
-    if (checkY < gridSize && grid[checkY]?.[checkX]?.building.type === 'road') {
-      roadOnSouthOrEast = true;
-      break;
-    }
-  }
-  
-  // Check east edge (x + width) - front-left in isometric view
-  if (!roadOnSouthOrEast) {
-    for (let dy = 0; dy < height; dy++) {
-      const checkX = x + width;
-      const checkY = y + dy;
-      if (checkX < gridSize && grid[checkY]?.[checkX]?.building.type === 'road') {
-        roadOnSouthOrEast = true;
-        break;
-      }
-    }
-  }
-  
-  // Check north edge (y - 1) - back-left in isometric view
-  for (let dx = 0; dx < width; dx++) {
-    const checkX = x + dx;
-    const checkY = y - 1;
-    if (checkY >= 0 && grid[checkY]?.[checkX]?.building.type === 'road') {
-      roadOnNorthOrWest = true;
-      break;
-    }
-  }
-  
-  // Check west edge (x - 1) - back-right in isometric view
-  if (!roadOnNorthOrWest) {
-    for (let dy = 0; dy < height; dy++) {
-      const checkX = x - 1;
-      const checkY = y + dy;
-      if (checkX >= 0 && grid[checkY]?.[checkX]?.building.type === 'road') {
-        roadOnNorthOrWest = true;
-        break;
-      }
-    }
-  }
-  
-  const hasRoad = roadOnSouthOrEast || roadOnNorthOrWest;
-  // Only flip if road is on the back sides and NOT on the front sides
-  const shouldFlip = hasRoad && roadOnNorthOrWest && !roadOnSouthOrEast;
-  
-  return { hasRoad, shouldFlip };
-}
-
-function createTile(x: number, y: number, buildingType: BuildingType = 'grass'): Tile {
-  return {
-    x,
-    y,
-    zone: 'none',
-    building: createBuilding(buildingType),
-    landValue: 50,
-    pollution: 0,
-    crime: 0,
-    traffic: 0,
-    hasSubway: false,
-  };
-}
-
-// Building types that don't require construction (already complete when placed)
-const NO_CONSTRUCTION_TYPES: BuildingType[] = ['grass', 'empty', 'water', 'road', 'tree'];
-
-function createBuilding(type: BuildingType): Building {
-  // Buildings that don't require construction start at 100% complete
-  const constructionProgress = NO_CONSTRUCTION_TYPES.includes(type) ? 100 : 0;
-  
-  return {
-    type,
-    level: type === 'grass' || type === 'empty' || type === 'water' ? 0 : 1,
-    population: 0,
-    jobs: 0,
-    powered: false,
-    watered: false,
-    onFire: false,
-    fireProgress: 0,
-    age: 0,
-    constructionProgress,
-    abandoned: false,
-  };
-}
-
-function createInitialBudget(): Budget {
-  return {
-    police: { name: 'Police', funding: 100, cost: 0 },
-    fire: { name: 'Fire', funding: 100, cost: 0 },
-    health: { name: 'Health', funding: 100, cost: 0 },
-    education: { name: 'Education', funding: 100, cost: 0 },
-    transportation: { name: 'Transportation', funding: 100, cost: 0 },
-    parks: { name: 'Parks', funding: 100, cost: 0 },
-    power: { name: 'Power', funding: 100, cost: 0 },
-    water: { name: 'Water', funding: 100, cost: 0 },
-  };
-}
+// createInitialBudget moved to src/lib/simulation/economy/BudgetSystem.ts
 
 function createInitialStats(): Stats {
   return {
@@ -766,37 +254,6 @@ function createInitialStats(): Stats {
     },
   };
 }
-
-// PERF: Optimized service coverage grid creation
-// Uses typed arrays internally for faster operations
-function createServiceCoverage(size: number): ServiceCoverage {
-  // Pre-allocate arrays with correct size to avoid resizing
-  const createGrid = () => {
-    const grid: number[][] = new Array(size);
-    for (let y = 0; y < size; y++) {
-      grid[y] = new Array(size).fill(0);
-    }
-    return grid;
-  };
-  
-  const createBoolGrid = () => {
-    const grid: boolean[][] = new Array(size);
-    for (let y = 0; y < size; y++) {
-      grid[y] = new Array(size).fill(false);
-    }
-    return grid;
-  };
-
-  return {
-    police: createGrid(),
-    fire: createGrid(),
-    health: createGrid(),
-    education: createGrid(),
-    power: createBoolGrid(),
-    water: createBoolGrid(),
-  };
-}
-
 
 // Generate a UUID v4
 function generateUUID(): string {
@@ -841,181 +298,6 @@ export function createInitialGameState(size: number = DEFAULT_GRID_SIZE, cityNam
     waterBodies,
     gameVersion: 0,
   };
-}
-
-// Service building configuration - defined once, reused across calls
-// Exported so overlay rendering can access radii
-export const SERVICE_CONFIG = {
-  police_station: { range: 13, rangeSquared: 169, type: 'police' as const },
-  fire_station: { range: 18, rangeSquared: 324, type: 'fire' as const },
-  hospital: { range: 12, rangeSquared: 144, type: 'health' as const },
-  school: { range: 11, rangeSquared: 121, type: 'education' as const },
-  university: { range: 19, rangeSquared: 361, type: 'education' as const },
-  power_plant: { range: 15, rangeSquared: 225 },
-  water_tower: { range: 12, rangeSquared: 144 },
-} as const;
-
-// Building types that provide services
-const SERVICE_BUILDING_TYPES = new Set([
-  'police_station', 'fire_station', 'hospital', 'school', 'university',
-  'power_plant', 'water_tower'
-]);
-
-// PERF: Cache for service building positions to avoid O(n²) scan every tick
-// Uses a version counter that increments when service buildings are placed/demolished
-type ServiceBuildingInfo = { x: number; y: number; type: BuildingType };
-let cachedServiceBuildings: ServiceBuildingInfo[] | null = null;
-let serviceBuildingCacheVersion = 0;
-let lastCachedVersion = -1;
-
-// Call this to invalidate the service building cache when buildings change
-// This should be called when:
-// - Service buildings are placed (placeBuilding)
-// - Service buildings are demolished (bulldozeTile)
-// - Game is reloaded (newGame, loadState)
-export function invalidateServiceBuildingCache(): void {
-  serviceBuildingCacheVersion++;
-  cachedServiceBuildings = null;
-}
-
-// Calculate service coverage from service buildings - optimized version
-function calculateServiceCoverage(grid: Tile[][], size: number): ServiceCoverage {
-  const services = createServiceCoverage(size);
-
-  // PERF: Use cached service buildings if version hasn't changed
-  // This avoids the O(n²) first pass when no service buildings have been placed/demolished
-  let serviceBuildings: ServiceBuildingInfo[];
-
-  if (cachedServiceBuildings !== null && lastCachedVersion === serviceBuildingCacheVersion) {
-    serviceBuildings = cachedServiceBuildings;
-  } else {
-    // First pass: collect all service building positions (including under construction)
-    // We filter for construction/abandoned status in the second pass so cache remains valid
-    // even when buildings complete construction or become abandoned
-    serviceBuildings = [];
-
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        const tile = grid[y][x];
-        const buildingType = tile.building.type;
-
-        // Quick check if this is a service building
-        if (!SERVICE_BUILDING_TYPES.has(buildingType)) continue;
-
-        serviceBuildings.push({ x, y, type: buildingType });
-      }
-    }
-
-    // Cache the service building positions for next tick
-    cachedServiceBuildings = serviceBuildings;
-    lastCachedVersion = serviceBuildingCacheVersion;
-  }
-
-  // Second pass: apply coverage for each service building
-  for (const building of serviceBuildings) {
-    const { x, y, type } = building;
-    const tile = grid[y][x];
-
-    // Skip buildings under construction (checked here so cache stays valid across construction)
-    if (tile.building.constructionProgress !== undefined && tile.building.constructionProgress < 100) {
-      continue;
-    }
-
-    // Skip abandoned buildings
-    if (tile.building.abandoned) {
-      continue;
-    }
-
-    const config = SERVICE_CONFIG[type as keyof typeof SERVICE_CONFIG];
-    if (!config) continue;
-
-    const range = config.range;
-    const rangeSquared = config.rangeSquared;
-    
-    // Calculate bounds to avoid checking tiles outside the grid
-    const minY = Math.max(0, y - range);
-    const maxY = Math.min(size - 1, y + range);
-    const minX = Math.max(0, x - range);
-    const maxX = Math.min(size - 1, x + range);
-    
-    // Handle power and water (boolean coverage)
-    if (type === 'power_plant') {
-      for (let ny = minY; ny <= maxY; ny++) {
-        for (let nx = minX; nx <= maxX; nx++) {
-          const dx = nx - x;
-          const dy = ny - y;
-          // Use squared distance comparison (avoid Math.sqrt)
-          if (dx * dx + dy * dy <= rangeSquared) {
-            services.power[ny][nx] = true;
-          }
-        }
-      }
-    } else if (type === 'water_tower') {
-      for (let ny = minY; ny <= maxY; ny++) {
-        for (let nx = minX; nx <= maxX; nx++) {
-          const dx = nx - x;
-          const dy = ny - y;
-          if (dx * dx + dy * dy <= rangeSquared) {
-            services.water[ny][nx] = true;
-          }
-        }
-      }
-    } else {
-      // Handle percentage-based coverage (police, fire, health, education)
-      const serviceType = (config as { type: 'police' | 'fire' | 'health' | 'education' }).type;
-      const currentCoverage = services[serviceType] as number[][];
-      
-      for (let ny = minY; ny <= maxY; ny++) {
-        for (let nx = minX; nx <= maxX; nx++) {
-          const dx = nx - x;
-          const dy = ny - y;
-          const distSquared = dx * dx + dy * dy;
-          
-          if (distSquared <= rangeSquared) {
-            // Only compute sqrt when we need the actual distance for coverage falloff
-            const distance = Math.sqrt(distSquared);
-            const coverage = Math.max(0, (1 - distance / range) * 100);
-            currentCoverage[ny][nx] = Math.min(100, currentCoverage[ny][nx] + coverage);
-          }
-        }
-      }
-    }
-  }
-
-  return services;
-}
-
-// Check if a multi-tile building can be SPAWNED at the given position
-// This is stricter than canPlaceMultiTileBuilding - it doesn't allow 'empty' tiles
-// because those are placeholders for existing multi-tile buildings
-function canSpawnMultiTileBuilding(
-  grid: Tile[][],
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  zone: ZoneType,
-  gridSize: number
-): boolean {
-  if (x + width > gridSize || y + height > gridSize) {
-    return false;
-  }
-  
-  for (let dy = 0; dy < height; dy++) {
-    for (let dx = 0; dx < width; dx++) {
-      const tile = grid[y + dy]?.[x + dx];
-      if (!tile) return false;
-      // Must be in the same zone
-      if (tile.zone !== zone) return false;
-      // Can only spawn on grass or trees
-      // NOT 'empty' - those are placeholders for existing multi-tile buildings
-      if (tile.building.type !== 'grass' && tile.building.type !== 'tree') {
-        return false;
-      }
-    }
-  }
-  
-  return true;
 }
 
 // PERF: Pre-allocated arrays for hasRoadAccess BFS to avoid GC pressure
@@ -1099,300 +381,11 @@ function hasRoadAccess(
   return false;
 }
 
-// Evolve buildings based on conditions, reserving footprints as density increases
-function evolveBuilding(grid: Tile[][], x: number, y: number, services: ServiceCoverage, demand?: { residential: number; commercial: number; industrial: number }): Building {
-  const tile = grid[y][x];
-  const building = tile.building;
-  const zone = tile.zone;
-
-  // Only evolve zoned tiles with real buildings
-  if (zone === 'none' || building.type === 'grass' || building.type === 'water' || building.type === 'road') {
-    return building;
-  }
-
-  // Placeholder tiles from multi-tile footprints stay inert but track utilities
-  if (building.type === 'empty') {
-    building.powered = services.power[y][x];
-    building.watered = services.water[y][x];
-    building.population = 0;
-    building.jobs = 0;
-    return building;
-  }
-
-  building.powered = services.power[y][x];
-  building.watered = services.water[y][x];
-
-  const hasPower = building.powered;
-  const hasWater = building.watered;
-  const landValue = tile.landValue;
-  
-  // Starter buildings (farms, house_small, shop_small) don't require power/water
-  const isStarter = isStarterBuilding(x, y, building.type);
-
-  if (!isStarter && (!hasPower || !hasWater)) {
-    return building;
-  }
-
-  // Progress construction if building is not yet complete
-  // Construction requires power and water to progress (except farms)
-  if (building.constructionProgress !== undefined && building.constructionProgress < 100) {
-    // Construction speed scales with building size (larger buildings take longer)
-    const constructionSpeed = getConstructionSpeed(building.type);
-    building.constructionProgress = Math.min(100, building.constructionProgress + constructionSpeed);
-    
-    // While under construction, buildings don't generate population or jobs
-    building.population = 0;
-    building.jobs = 0;
-    
-    // Don't age or evolve until construction is complete
-    return building;
-  }
-
-  // Get zone demand for abandonment/recovery logic
-  const zoneDemandValue = demand ? (
-    zone === 'residential' ? demand.residential :
-    zone === 'commercial' ? demand.commercial :
-    zone === 'industrial' ? demand.industrial : 0
-  ) : 0;
-
-  // === ABANDONMENT MECHANIC ===
-  // Buildings can become abandoned when demand is very negative (oversupply)
-  // Abandoned buildings produce nothing but can recover when demand returns
-  
-  if (building.abandoned) {
-    // Abandoned building - check for recovery
-    // When demand is positive, abandoned buildings have a chance to be cleared
-    // The cleared land (zoned grass) can then be redeveloped
-    if (zoneDemandValue > 10) {
-      // Higher demand = higher chance of clearing abandoned building
-      // At demand 30, ~3% chance per tick; at demand 60, ~8% chance
-      const clearingChance = Math.min(0.12, (zoneDemandValue - 10) / 600);
-      if (Math.random() < clearingChance) {
-        // Clear the abandoned building - revert to zoned grass
-        // This allows natural redevelopment when demand recovers
-        // For multi-tile buildings, clear the entire footprint to avoid orphaned 'empty' tiles
-        const size = getBuildingSize(building.type);
-        if (size.width > 1 || size.height > 1) {
-          // Clear all tiles in the footprint
-          for (let dy = 0; dy < size.height; dy++) {
-            for (let dx = 0; dx < size.width; dx++) {
-              const clearTile = grid[y + dy]?.[x + dx];
-              if (clearTile) {
-                const clearedBuilding = createBuilding('grass');
-                clearedBuilding.powered = services.power[y + dy]?.[x + dx] ?? false;
-                clearedBuilding.watered = services.water[y + dy]?.[x + dx] ?? false;
-                clearTile.building = clearedBuilding;
-              }
-            }
-          }
-        }
-        // Return grass for the origin tile
-        const clearedBuilding = createBuilding('grass');
-        clearedBuilding.powered = building.powered;
-        clearedBuilding.watered = building.watered;
-        return clearedBuilding;
-      }
-    }
-    
-    // Abandoned buildings produce nothing
-    building.population = 0;
-    building.jobs = 0;
-    // Abandoned buildings still age but much slower
-    building.age = (building.age || 0) + 0.1;
-    return building;
-  }
-  
-  // Check if building should become abandoned (oversupply situation)
-  // Only happens when demand is significantly negative and building has been around a while
-  // Abandonment is gradual - even at worst conditions, only ~2-3% of buildings abandon per tick
-  if (zoneDemandValue < -20 && building.age > 30) {
-    // Worse demand = higher chance of abandonment, but capped low for gradual effect
-    // At demand -40, ~0.5% chance per tick; at demand -100, ~2% chance
-    const abandonmentChance = Math.min(0.02, Math.abs(zoneDemandValue + 20) / 4000);
-
-    // Buildings without power/water are slightly more likely to be abandoned (except starter buildings)
-    const utilityPenalty = isStarter ? 0 : ((!hasPower ? 0.005 : 0) + (!hasWater ? 0.005 : 0));
-
-    // Lower-level buildings are slightly more likely to be abandoned
-    const levelPenalty = building.level <= 2 ? 0.003 : 0;
-
-    if (Math.random() < abandonmentChance + utilityPenalty + levelPenalty) {
-      building.abandoned = true;
-      building.population = 0;
-      building.jobs = 0;
-      return building;
-    }
-  }
-
-  building.age = (building.age || 0) + 1;
-
-  // Determine target building based on zone and conditions
-  const buildingList = zone === 'residential' ? RESIDENTIAL_BUILDINGS :
-    zone === 'commercial' ? COMMERCIAL_BUILDINGS :
-    zone === 'industrial' ? INDUSTRIAL_BUILDINGS : [];
-
-  // Calculate level based on land value, services, and demand
-  const serviceCoverage = (
-    services.police[y][x] +
-    services.fire[y][x] +
-    services.health[y][x] +
-    services.education[y][x]
-  ) / 4;
-
-  // Get zone demand to factor into level calculation
-  const zoneDemandForLevel = demand ? (
-    zone === 'residential' ? demand.residential :
-    zone === 'commercial' ? demand.commercial :
-    zone === 'industrial' ? demand.industrial : 0
-  ) : 0;
-  
-  // High demand increases target level, encouraging densification
-  // At demand 60, adds ~0.5 level; at demand 100, adds ~1 level
-  const demandLevelBoost = Math.max(0, (zoneDemandForLevel - 30) / 70) * 0.7;
-
-  const targetLevel = Math.min(5, Math.max(1, Math.floor(
-    (landValue / 24) + (serviceCoverage / 28) + (building.age / 60) + demandLevelBoost
-  )));
-
-  const targetIndex = Math.min(buildingList.length - 1, targetLevel - 1);
-  const targetType = buildingList[targetIndex];
-  let anchorX = x;
-  let anchorY = y;
-
-  // Calculate consolidation probability based on demand
-  // Base probability is low to make consolidation gradual
-  let consolidationChance = 0.08;
-  let allowBuildingConsolidation = false;
-  
-  // Check if this is a small/medium density building that could consolidate
-  const isSmallResidential = zone === 'residential' && 
-    (building.type === 'house_small' || building.type === 'house_medium');
-  const isSmallCommercial = zone === 'commercial' && 
-    (building.type === 'shop_small' || building.type === 'shop_medium');
-  const isSmallIndustrial = zone === 'industrial' && 
-    building.type === 'factory_small';
-  
-  // Get relevant demand for this zone
-  const zoneDemand = demand ? (
-    zone === 'residential' ? demand.residential :
-    zone === 'commercial' ? demand.commercial :
-    zone === 'industrial' ? demand.industrial : 0
-  ) : 0;
-  
-  if (zoneDemand > 30) {
-    if (isSmallResidential || isSmallCommercial || isSmallIndustrial) {
-      // Gradual boost based on demand: at demand 60 adds ~10%, at demand 100 adds ~23%
-      const demandBoost = Math.min(0.25, (zoneDemand - 30) / 300);
-      consolidationChance += demandBoost;
-      
-      // At very high demand (> 70), allow consolidating existing small buildings
-      // but keep the probability increase modest
-      if (zoneDemand > 70) {
-        consolidationChance += 0.05;
-        // Allow consolidating existing small buildings (not just empty land)
-        // This enables developed areas to densify
-        allowBuildingConsolidation = true;
-      }
-    }
-  }
-
-  // Attempt to upgrade footprint/density when the tile is mature enough
-  // Keep consistent age requirement to prevent sudden mass consolidation
-  // Consolidation ALWAYS requires utilities (power and water) - no farm exemption
-  // because consolidation upgrades buildings to larger types that need utilities
-  const ageRequirement = 12;
-  const hasUtilitiesForConsolidation = hasPower && hasWater;
-  if (hasUtilitiesForConsolidation && building.age > ageRequirement && (targetLevel > building.level || targetType !== building.type) && Math.random() < consolidationChance) {
-    const size = getBuildingSize(targetType);
-    const footprint = findFootprintIncludingTile(grid, x, y, size.width, size.height, zone, grid.length, allowBuildingConsolidation);
-
-    if (footprint) {
-      const anchor = applyBuildingFootprint(grid, footprint.originX, footprint.originY, targetType, zone, targetLevel, services);
-      anchor.level = targetLevel;
-      anchorX = footprint.originX;
-      anchorY = footprint.originY;
-    } else if (targetLevel > building.level) {
-      // If we can't merge lots, still allow incremental level gain
-      building.level = Math.min(targetLevel, building.level + 1);
-    }
-  }
-
-  // Always refresh stats on the anchor tile
-  const anchorTile = grid[anchorY][anchorX];
-  const anchorBuilding = anchorTile.building;
-  anchorBuilding.powered = services.power[anchorY][anchorX];
-  anchorBuilding.watered = services.water[anchorY][anchorX];
-  anchorBuilding.level = Math.max(anchorBuilding.level, Math.min(targetLevel, anchorBuilding.level + 1));
-
-  const buildingStats = BUILDING_STATS[anchorBuilding.type];
-  const efficiency = (anchorBuilding.powered ? 0.5 : 0) + (anchorBuilding.watered ? 0.5 : 0);
-
-  anchorBuilding.population = buildingStats?.maxPop > 0
-    ? Math.floor(buildingStats.maxPop * Math.max(1, anchorBuilding.level) * efficiency * 0.8)
-    : 0;
-  anchorBuilding.jobs = buildingStats?.maxJobs > 0
-    ? Math.floor(buildingStats.maxJobs * Math.max(1, anchorBuilding.level) * efficiency * 0.8)
-    : 0;
-
-  return grid[y][x].building;
-}
-
 // Calculate city stats
 // effectiveTaxRate is the lagged tax rate used for demand calculations
 // PERF: Unified grid metrics collection - single pass for all data
 // Replaces 3 separate grid scans (calculateStats, updateBudgetCosts, generateAdvisorMessages)
-interface GridMetrics {
-  // Population & Jobs
-  population: number;
-  jobs: number;
-
-  // Environment
-  totalPollution: number;
-  totalLandValue: number;
-  treeCount: number;
-  waterCount: number;
-  parkCount: number;
-
-  // Zone counts
-  residentialZones: number;
-  commercialZones: number;
-  industrialZones: number;
-  developedResidential: number;
-  developedCommercial: number;
-  developedIndustrial: number;
-
-  // Transport
-  subwayTiles: number;
-  subwayStations: number;
-  railTiles: number;
-  railStations: number;
-  roadCount: number;
-
-  // Special buildings
-  hasAirport: boolean;
-  hasCityHall: boolean;
-  hasSpaceProgram: boolean;
-  stadiumCount: number;
-  museumCount: number;
-  hasAmusementPark: boolean;
-
-  // Budget building counts
-  policeCount: number;
-  fireCount: number;
-  hospitalCount: number;
-  schoolCount: number;
-  universityCount: number;
-  powerCount: number;
-  waterTowerCount: number;
-
-  // Advisor metrics
-  unpoweredBuildings: number;
-  unwateredBuildings: number;
-  abandonedBuildings: number;
-  abandonedResidential: number;
-  abandonedCommercial: number;
-  abandonedIndustrial: number;
-}
+// GridMetrics interface moved to src/lib/simulation/economy/BudgetSystem.ts
 
 function collectGridMetrics(grid: Tile[][], size: number): GridMetrics {
   const metrics: GridMetrics = {
@@ -1523,81 +516,16 @@ function calculateStatsFromMetrics(metrics: GridMetrics, size: number, budget: B
     hasAirport, hasCityHall, hasSpaceProgram, stadiumCount, museumCount, hasAmusementPark
   } = metrics;
 
-  // Calculate demand - subway network boosts commercial demand
-  // Tax rate affects demand as BOTH a multiplier and additive modifier:
-  // - Multiplier: At 100% tax, demand is reduced to 0 regardless of other factors
-  // - Additive: Small bonus/penalty around the base rate for fine-tuning
-  // Base tax rate is 9%, so we calculate relative to that
-  // Uses effectiveTaxRate (lagged) so changes don't impact demand immediately
-  
-  // Tax multiplier: 1.0 at 0% tax, ~1.0 at 9% tax, 0.0 at 100% tax
-  // This ensures high taxes dramatically reduce demand regardless of other factors
-  const taxMultiplier = Math.max(0, 1 - (effectiveTaxRate - 9) / 91);
-  
-  // Small additive modifier for fine-tuning around base rate
-  // At 9% tax: 0. At 0% tax: +18. At 20% tax: -22
-  const taxAdditiveModifier = (9 - effectiveTaxRate) * 2;
-  
-  const subwayBonus = Math.min(20, subwayTiles * 0.5 + subwayStations * 3);
-  
-  // Rail network bonuses - affects commercial (passenger rail, accessibility) and industrial (freight transport)
-  // Rail stations have bigger impact than raw track count since they represent actual service
-  // Industrial gets a stronger bonus as freight rail is critical for factories/warehouses
-  const railCommercialBonus = Math.min(12, railTiles * 0.15 + railStations * 4);
-  const railIndustrialBonus = Math.min(18, railTiles * 0.25 + railStations * 6);
-  
-  // Special building bonuses
-  // Airport: Major boost to commercial (business travel) and industrial (cargo/logistics)
-  const airportCommercialBonus = hasAirport ? 15 : 0;
-  const airportIndustrialBonus = hasAirport ? 10 : 0;
-  
-  // City Hall: Modest boost to all demand (legitimacy, attracts businesses and residents)
-  const cityHallResidentialBonus = hasCityHall ? 8 : 0;
-  const cityHallCommercialBonus = hasCityHall ? 10 : 0;
-  const cityHallIndustrialBonus = hasCityHall ? 5 : 0;
-  
-  // Space Program: Big boost to industrial (high-tech sector), modest boost to residential (prestige)
-  const spaceProgramResidentialBonus = hasSpaceProgram ? 10 : 0;
-  const spaceProgramIndustrialBonus = hasSpaceProgram ? 20 : 0;
-  
-  // Stadium: Boost to commercial (entertainment, visitors, sports bars)
-  const stadiumCommercialBonus = Math.min(20, stadiumCount * 12);
-  
-  // Museum: Boost to commercial (tourism) and residential (culture/quality of life)
-  const museumCommercialBonus = Math.min(15, museumCount * 8);
-  const museumResidentialBonus = Math.min(10, museumCount * 5);
-  
-  // Amusement Park: Big boost to commercial (tourism, entertainment)
-  const amusementParkCommercialBonus = hasAmusementPark ? 18 : 0;
-  
-  // Calculate base demands from economic factors
-  const baseResidentialDemand = (jobs - population * 0.7) / 18;
-  const baseCommercialDemand = (population * 0.3 - jobs * 0.3) / 4 + subwayBonus;
-  const baseIndustrialDemand = (population * 0.35 - jobs * 0.3) / 2.0;
-  
-  // Add special building bonuses to base demands
-  const residentialWithBonuses = baseResidentialDemand + cityHallResidentialBonus + spaceProgramResidentialBonus + museumResidentialBonus;
-  const commercialWithBonuses = baseCommercialDemand + airportCommercialBonus + cityHallCommercialBonus + stadiumCommercialBonus + museumCommercialBonus + amusementParkCommercialBonus + railCommercialBonus;
-  const industrialWithBonuses = baseIndustrialDemand + airportIndustrialBonus + cityHallIndustrialBonus + spaceProgramIndustrialBonus + railIndustrialBonus;
-  
-  // Apply tax effect: multiply by tax factor, then add small modifier
-  // The multiplier ensures high taxes crush demand; the additive fine-tunes at normal rates
-  const residentialDemand = Math.min(100, Math.max(-100, residentialWithBonuses * taxMultiplier + taxAdditiveModifier));
-  const commercialDemand = Math.min(100, Math.max(-100, commercialWithBonuses * taxMultiplier + taxAdditiveModifier * 0.8));
-  const industrialDemand = Math.min(100, Math.max(-100, industrialWithBonuses * taxMultiplier + taxAdditiveModifier * 0.5));
+  // Calculate tax effects (from TaxSystem)
+  const taxMultiplier = calculateTaxMultiplier(effectiveTaxRate);
+  const taxAdditiveModifier = calculateTaxAdditiveModifier(effectiveTaxRate);
 
-  // Calculate income and expenses
-  const income = Math.floor(population * taxRate * 0.1 + jobs * taxRate * 0.05);
-  
-  let expenses = 0;
-  expenses += Math.floor(budget.police.cost * budget.police.funding / 100);
-  expenses += Math.floor(budget.fire.cost * budget.fire.funding / 100);
-  expenses += Math.floor(budget.health.cost * budget.health.funding / 100);
-  expenses += Math.floor(budget.education.cost * budget.education.funding / 100);
-  expenses += Math.floor(budget.transportation.cost * budget.transportation.funding / 100);
-  expenses += Math.floor(budget.parks.cost * budget.parks.funding / 100);
-  expenses += Math.floor(budget.power.cost * budget.power.funding / 100);
-  expenses += Math.floor(budget.water.cost * budget.water.funding / 100);
+  // Calculate RCI demand (from DemandSystem)
+  const demandResult = calculateDemand(metrics, taxMultiplier, taxAdditiveModifier);
+
+  // Calculate income and expenses (from TaxSystem and BudgetSystem)
+  const income = calculateIncome(population, jobs, taxRate);
+  const expenses = calculateExpenses(budget);
 
   // Calculate ratings
   const avgPoliceCoverage = calculateAverageCoverage(services.police);
@@ -1634,11 +562,7 @@ function calculateStatsFromMetrics(metrics: GridMetrics, size: number, budget: B
     education,
     safety,
     environment,
-    demand: {
-      residential: residentialDemand,
-      commercial: commercialDemand,
-      industrial: industrialDemand,
-    },
+    demand: demandResult,
   };
 }
 
@@ -1654,21 +578,7 @@ function calculateAverageCoverage(coverage: number[][]): number {
   return count > 0 ? total / count : 0;
 }
 
-// PERF: Update budget costs using pre-collected metrics (no grid scan)
-function updateBudgetFromMetrics(metrics: GridMetrics, budget: Budget): Budget {
-  const newBudget = { ...budget };
-
-  newBudget.police.cost = metrics.policeCount * 50;
-  newBudget.fire.cost = metrics.fireCount * 50;
-  newBudget.health.cost = metrics.hospitalCount * 100;
-  newBudget.education.cost = metrics.schoolCount * 30 + metrics.universityCount * 100;
-  newBudget.transportation.cost = metrics.roadCount * 2 + metrics.subwayTiles * 3 + metrics.subwayStations * 25;
-  newBudget.parks.cost = metrics.parkCount * 10;
-  newBudget.power.cost = metrics.powerCount * 150;
-  newBudget.water.cost = metrics.waterTowerCount * 75;
-
-  return newBudget;
-}
+// updateBudgetFromMetrics moved to src/lib/simulation/economy/BudgetSystem.ts
 
 // PERF: Generate advisor messages using pre-collected metrics (no grid scan)
 function generateAdvisorMessagesFromMetrics(stats: Stats, metrics: GridMetrics): AdvisorMessage[] {
@@ -1828,27 +738,27 @@ export function simulateTick(state: GameState): GameState {
       const newWatered = services.water[y][x];
       const needsPowerWaterUpdate = originalBuilding.powered !== newPowered ||
                                     originalBuilding.watered !== newWatered;
-      
+
       // PERF: Roads are static unless bulldozed - skip if no utility update needed
       if (originalBuilding.type === 'road' && !needsPowerWaterUpdate) {
         continue;
       }
-      
+
       // Unzoned grass/trees with no pollution change - skip
-      if (originalTile.zone === 'none' && 
+      if (originalTile.zone === 'none' &&
           (originalBuilding.type === 'grass' || originalBuilding.type === 'tree') &&
           !needsPowerWaterUpdate &&
           originalTile.pollution < 0.01 &&
           (BUILDING_STATS[originalBuilding.type]?.pollution || 0) === 0) {
         continue;
       }
-      
+
       // PERF: Completed service/park buildings with no state changes can skip heavy processing
       // They only need utility updates and pollution decay
-      const isCompletedServiceBuilding = originalTile.zone === 'none' && 
+      const isCompletedServiceBuilding = originalTile.zone === 'none' &&
           originalBuilding.constructionProgress === 100 &&
           !originalBuilding.onFire &&
-          originalBuilding.type !== 'grass' && 
+          originalBuilding.type !== 'grass' &&
           originalBuilding.type !== 'tree' &&
           originalBuilding.type !== 'empty';
       if (isCompletedServiceBuilding && !needsPowerWaterUpdate && originalTile.pollution < 0.01) {
@@ -1975,11 +885,10 @@ export function simulateTick(state: GameState): GameState {
   // Update budget costs using pre-collected metrics (no grid scan)
   const newBudget = updateBudgetFromMetrics(metrics, state.budget);
 
-  // Gradually move effectiveTaxRate toward taxRate
+  // Gradually move effectiveTaxRate toward taxRate (from TaxSystem)
   // This creates a lagging effect so tax changes don't immediately impact demand
   // Rate of change: 3% of difference per tick, so large changes take ~50-80 ticks (~2-3 game days)
-  const taxRateDiff = state.taxRate - state.effectiveTaxRate;
-  const newEffectiveTaxRate = state.effectiveTaxRate + taxRateDiff * 0.03;
+  const newEffectiveTaxRate = updateEffectiveTaxRate(state.effectiveTaxRate, state.taxRate, 0.03);
 
   // Calculate stats using pre-collected metrics (no grid scan)
   const newStats = calculateStatsFromMetrics(metrics, size, newBudget, state.taxRate, newEffectiveTaxRate, services);
@@ -2064,50 +973,6 @@ export function simulateTick(state: GameState): GameState {
 }
 
 // Building sizes for multi-tile buildings (width x height)
-const BUILDING_SIZES: Partial<Record<BuildingType, { width: number; height: number }>> = {
-  power_plant: { width: 2, height: 2 },
-  hospital: { width: 2, height: 2 },
-  school: { width: 2, height: 2 },
-  stadium: { width: 3, height: 3 },
-  museum: { width: 3, height: 3 },
-  university: { width: 3, height: 3 },
-  airport: { width: 4, height: 4 },
-  space_program: { width: 3, height: 3 },
-  park_large: { width: 3, height: 3 },
-  mansion: { width: 2, height: 2 },
-  apartment_low: { width: 2, height: 2 },
-  apartment_high: { width: 2, height: 2 },
-  office_low: { width: 2, height: 2 },
-  office_high: { width: 2, height: 2 },
-  mall: { width: 3, height: 3 },
-  // Industrial buildings - small is 1x1, medium is 2x2, large is 3x3
-  factory_medium: { width: 2, height: 2 },
-  factory_large: { width: 3, height: 3 },
-  warehouse: { width: 2, height: 2 },
-  city_hall: { width: 2, height: 2 },
-  amusement_park: { width: 4, height: 4 },
-  // Parks (new sprite sheet)
-  playground_large: { width: 2, height: 2 },
-  baseball_field_small: { width: 2, height: 2 },
-  football_field: { width: 2, height: 2 },
-  baseball_stadium: { width: 3, height: 3 },
-  mini_golf_course: { width: 2, height: 2 },
-  go_kart_track: { width: 2, height: 2 },
-  amphitheater: { width: 2, height: 2 },
-  greenhouse_garden: { width: 2, height: 2 },
-  marina_docks_small: { width: 2, height: 2 },
-  roller_coaster_small: { width: 2, height: 2 },
-  mountain_lodge: { width: 2, height: 2 },
-  mountain_trailhead: { width: 3, height: 3 },
-  // Transportation
-  rail_station: { width: 2, height: 2 },
-};
-
-// Get the size of a building (how many tiles it spans)
-export function getBuildingSize(buildingType: BuildingType): { width: number; height: number } {
-  return BUILDING_SIZES[buildingType] || { width: 1, height: 1 };
-}
-
 // Get construction speed for a building type (larger buildings take longer)
 // Returns percentage progress per tick
 function getConstructionSpeed(buildingType: BuildingType): number {
@@ -2123,499 +988,6 @@ function getConstructionSpeed(buildingType: BuildingType): number {
   // Construction takes 30% longer overall (speed reduced by 1/1.3)
   const baseSpeed = 24 + Math.random() * 12;
   return (baseSpeed / Math.sqrt(area)) / 1.3;
-}
-
-// Check if a multi-tile building can be placed at the given position
-function canPlaceMultiTileBuilding(
-  grid: Tile[][],
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  gridSize: number
-): boolean {
-  // Check bounds
-  if (x + width > gridSize || y + height > gridSize) {
-    return false;
-  }
-
-  // Check all tiles are available (grass or tree only - not water, roads, or existing buildings)
-  // NOTE: 'empty' tiles are placeholders from multi-tile buildings, so we can't build on them
-  // without first bulldozing the entire parent building
-  for (let dy = 0; dy < height; dy++) {
-    for (let dx = 0; dx < width; dx++) {
-      const tile = grid[y + dy]?.[x + dx];
-      if (!tile) return false;
-      // Can only build on grass or trees - roads must be bulldozed first
-      if (tile.building.type !== 'grass' && tile.building.type !== 'tree') {
-        return false;
-      }
-    }
-  }
-
-  return true;
-}
-
-// Footprint helpers for organic growth and merging
-// IMPORTANT: Only allow consolidation of truly empty land (grass, tree).
-// Do NOT include 'empty' tiles - those are placeholders for existing multi-tile buildings!
-// Including 'empty' would allow buildings to overlap with each other during evolution.
-const MERGEABLE_TILE_TYPES = new Set<BuildingType>(['grass', 'tree']);
-
-// Small buildings that can be consolidated into larger ones when demand is high
-const CONSOLIDATABLE_BUILDINGS: Record<ZoneType, Set<BuildingType>> = {
-  residential: new Set(['house_small', 'house_medium']),
-  commercial: new Set(['shop_small', 'shop_medium']),
-  industrial: new Set(['factory_small']),
-  none: new Set(),
-};
-
-function isMergeableZoneTile(
-  tile: Tile, 
-  zone: ZoneType, 
-  excludeTile?: { x: number; y: number },
-  allowBuildingConsolidation?: boolean
-): boolean {
-  // The tile being upgraded is always considered mergeable (it's the source of the evolution)
-  if (excludeTile && tile.x === excludeTile.x && tile.y === excludeTile.y) {
-    return tile.zone === zone && !tile.building.onFire && 
-           tile.building.type !== 'water' && tile.building.type !== 'road';
-  }
-  
-  if (tile.zone !== zone) return false;
-  if (tile.building.onFire) return false;
-  if (tile.building.type === 'water' || tile.building.type === 'road') return false;
-  
-  // Always allow merging grass and trees - truly unoccupied tiles
-  if (MERGEABLE_TILE_TYPES.has(tile.building.type)) {
-    return true;
-  }
-  
-  // When demand is high, allow consolidating small buildings into larger ones
-  // This enables developed areas to densify without requiring empty land
-  if (allowBuildingConsolidation && CONSOLIDATABLE_BUILDINGS[zone]?.has(tile.building.type)) {
-    return true;
-  }
-  
-  // 'empty' tiles are placeholders for multi-tile buildings and must NOT be merged
-  return false;
-}
-
-function footprintAvailable(
-  grid: Tile[][],
-  originX: number,
-  originY: number,
-  width: number,
-  height: number,
-  zone: ZoneType,
-  gridSize: number,
-  excludeTile?: { x: number; y: number },
-  allowBuildingConsolidation?: boolean
-): boolean {
-  if (originX < 0 || originY < 0 || originX + width > gridSize || originY + height > gridSize) {
-    return false;
-  }
-
-  for (let dy = 0; dy < height; dy++) {
-    for (let dx = 0; dx < width; dx++) {
-      const tile = grid[originY + dy][originX + dx];
-      if (!isMergeableZoneTile(tile, zone, excludeTile, allowBuildingConsolidation)) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
-function scoreFootprint(grid: Tile[][], originX: number, originY: number, width: number, height: number, gridSize: number): number {
-  // Prefer footprints that touch roads for access
-  let roadScore = 0;
-  const offsets = [
-    [-1, 0],
-    [1, 0],
-    [0, -1],
-    [0, 1],
-  ];
-
-  for (let dy = 0; dy < height; dy++) {
-    for (let dx = 0; dx < width; dx++) {
-      const gx = originX + dx;
-      const gy = originY + dy;
-      for (const [ox, oy] of offsets) {
-        const nx = gx + ox;
-        const ny = gy + oy;
-        if (nx >= 0 && ny >= 0 && nx < gridSize && ny < gridSize) {
-          if (grid[ny][nx].building.type === 'road') {
-            roadScore++;
-          }
-        }
-      }
-    }
-  }
-
-  // Smaller footprints and more road contacts rank higher
-  return roadScore - width * height * 0.25;
-}
-
-function findFootprintIncludingTile(
-  grid: Tile[][],
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  zone: ZoneType,
-  gridSize: number,
-  allowBuildingConsolidation?: boolean
-): { originX: number; originY: number } | null {
-  const candidates: { originX: number; originY: number; score: number }[] = [];
-  // The tile at (x, y) is the one being upgraded, so it should be excluded from the "can't merge existing buildings" check
-  const excludeTile = { x, y };
-
-  for (let oy = y - (height - 1); oy <= y; oy++) {
-    for (let ox = x - (width - 1); ox <= x; ox++) {
-      if (!footprintAvailable(grid, ox, oy, width, height, zone, gridSize, excludeTile, allowBuildingConsolidation)) continue;
-      if (x < ox || x >= ox + width || y < oy || y >= oy + height) continue;
-
-      const score = scoreFootprint(grid, ox, oy, width, height, gridSize);
-      candidates.push({ originX: ox, originY: oy, score });
-    }
-  }
-
-  if (candidates.length === 0) return null;
-  candidates.sort((a, b) => b.score - a.score);
-  return { originX: candidates[0].originX, originY: candidates[0].originY };
-}
-
-function applyBuildingFootprint(
-  grid: Tile[][],
-  originX: number,
-  originY: number,
-  buildingType: BuildingType,
-  zone: ZoneType,
-  level: number,
-  services?: ServiceCoverage
-): Building {
-  const size = getBuildingSize(buildingType);
-  const stats = BUILDING_STATS[buildingType] || { maxPop: 0, maxJobs: 0, pollution: 0, landValue: 0 };
-
-  for (let dy = 0; dy < size.height; dy++) {
-    for (let dx = 0; dx < size.width; dx++) {
-      const cell = grid[originY + dy][originX + dx];
-      if (dx === 0 && dy === 0) {
-        cell.building = createBuilding(buildingType);
-        cell.building.level = level;
-        cell.building.age = 0;
-        if (services) {
-          cell.building.powered = services.power[originY + dy][originX + dx];
-          cell.building.watered = services.water[originY + dy][originX + dx];
-        }
-      } else {
-        cell.building = createBuilding('empty');
-        cell.building.level = 0;
-        // PERF: Store origin coordinates to avoid O(16) backward search in findBuildingOrigin
-        cell.building.originX = originX;
-        cell.building.originY = originY;
-      }
-      cell.zone = zone;
-      cell.pollution = dx === 0 && dy === 0 ? stats.pollution : 0;
-    }
-  }
-
-  return grid[originY][originX].building;
-}
-
-// Place a building or zone
-export function placeBuilding(
-  state: GameState,
-  x: number,
-  y: number,
-  buildingType: BuildingType | null,
-  zone: ZoneType | null
-): GameState {
-  const tile = state.grid[y]?.[x];
-  if (!tile) return state;
-
-  // Can't build on water
-  if (tile.building.type === 'water') return state;
-
-  // Can't place roads on existing buildings (only allow on grass, tree, existing roads, or rail - rail+road creates combined tile)
-  // Note: 'empty' tiles are part of multi-tile building footprints, so roads can't be placed there either
-  if (buildingType === 'road') {
-    const allowedTypes: BuildingType[] = ['grass', 'tree', 'road', 'rail'];
-    if (!allowedTypes.includes(tile.building.type)) {
-      return state; // Can't place road on existing building
-    }
-  }
-
-  // Can't place rail on existing buildings (only allow on grass, tree, existing rail, or road - rail+road creates combined tile)
-  if (buildingType === 'rail') {
-    const allowedTypes: BuildingType[] = ['grass', 'tree', 'rail', 'road'];
-    if (!allowedTypes.includes(tile.building.type)) {
-      return state; // Can't place rail on existing building
-    }
-  }
-
-  // Roads and rail can be combined, but other buildings require clearing first
-  if (buildingType && buildingType !== 'road' && buildingType !== 'rail' && tile.building.type === 'road') {
-    return state;
-  }
-  if (buildingType && buildingType !== 'road' && buildingType !== 'rail' && tile.building.type === 'rail') {
-    return state;
-  }
-
-  const newGrid = state.grid.map(row => row.map(t => ({ ...t, building: { ...t.building } })));
-
-  if (zone !== null) {
-    // De-zoning (zone === 'none') can work on any zoned tile/building
-    // Regular zoning can only be applied to grass, tree, or road tiles
-    if (zone === 'none') {
-      // Check if this tile is part of a multi-tile building (handles both origin and 'empty' tiles)
-      const origin = findBuildingOrigin(newGrid, x, y, state.gridSize);
-      
-      if (origin) {
-        // Dezone the entire multi-tile building
-        const size = getBuildingSize(origin.buildingType);
-        for (let dy = 0; dy < size.height; dy++) {
-          for (let dx = 0; dx < size.width; dx++) {
-            const clearX = origin.originX + dx;
-            const clearY = origin.originY + dy;
-            if (clearX < state.gridSize && clearY < state.gridSize) {
-              newGrid[clearY][clearX].building = createBuilding('grass');
-              newGrid[clearY][clearX].zone = 'none';
-            }
-          }
-        }
-      } else {
-        // Single tile - can only dezone tiles that actually have a zone
-        if (tile.zone === 'none') {
-          return state;
-        }
-        // De-zoning resets to grass
-        newGrid[y][x].zone = 'none';
-        newGrid[y][x].building = createBuilding('grass');
-      }
-    } else {
-      // Can't zone over existing buildings (only allow zoning on grass, tree, or road)
-      // NOTE: 'empty' tiles are part of multi-tile buildings, so we can't zone them either
-      const allowedTypesForZoning: BuildingType[] = ['grass', 'tree', 'road'];
-      if (!allowedTypesForZoning.includes(tile.building.type)) {
-        return state; // Can't zone over existing building or part of multi-tile building
-      }
-      // Setting zone
-      newGrid[y][x].zone = zone;
-    }
-  } else if (buildingType) {
-    const size = getBuildingSize(buildingType);
-    
-    // Check water adjacency requirement for waterfront buildings (marina, pier)
-    let shouldFlip = false;
-    if (requiresWaterAdjacency(buildingType)) {
-      const waterCheck = getWaterAdjacency(newGrid, x, y, size.width, size.height, state.gridSize);
-      if (!waterCheck.hasWater) {
-        return state; // Waterfront buildings must be placed next to water
-      }
-      shouldFlip = waterCheck.shouldFlip;
-    }
-    
-    if (size.width > 1 || size.height > 1) {
-      // Multi-tile building - check if we can place it
-      if (!canPlaceMultiTileBuilding(newGrid, x, y, size.width, size.height, state.gridSize)) {
-        return state; // Can't place here
-      }
-      applyBuildingFootprint(newGrid, x, y, buildingType, 'none', 1);
-      // Set flip for waterfront buildings to face the water
-      if (shouldFlip) {
-        newGrid[y][x].building.flipped = true;
-      }
-    } else {
-      // Single tile building - check if tile is available
-      // Can't place on water, existing buildings, or 'empty' tiles (part of multi-tile buildings)
-      // Note: 'road' and 'rail' are included here so they can extend over existing roads/rails,
-      // but non-road/rail buildings are already blocked from roads/rails by the checks above
-      const allowedTypes: BuildingType[] = ['grass', 'tree', 'road', 'rail'];
-      if (!allowedTypes.includes(tile.building.type)) {
-        return state; // Can't place on existing building or part of multi-tile building
-      }
-      
-      // Handle combined rail+road tiles
-      if (buildingType === 'rail' && tile.building.type === 'road') {
-        // Placing rail on road: keep as road with rail overlay
-        newGrid[y][x].hasRailOverlay = true;
-        // Don't change the building type - it stays as road
-      } else if (buildingType === 'road' && tile.building.type === 'rail') {
-        // Placing road on rail: convert to road with rail overlay
-        newGrid[y][x].building = createBuilding('road');
-        newGrid[y][x].hasRailOverlay = true;
-        newGrid[y][x].zone = 'none';
-      } else if (buildingType === 'rail' && tile.hasRailOverlay) {
-        // Already has rail overlay, do nothing
-      } else if (buildingType === 'road' && tile.hasRailOverlay) {
-        // Already has road with rail overlay, do nothing
-      } else {
-        // Normal placement
-        newGrid[y][x].building = createBuilding(buildingType);
-        newGrid[y][x].zone = 'none';
-        // Clear rail overlay if placing non-combined building
-        if (buildingType !== 'road') {
-          newGrid[y][x].hasRailOverlay = false;
-        }
-      }
-      // Set flip for waterfront buildings to face the water
-      if (shouldFlip) {
-        newGrid[y][x].building.flipped = true;
-      }
-    }
-  }
-
-  // PERF: Invalidate service building cache if we placed a service building
-  if (buildingType && SERVICE_BUILDING_TYPES.has(buildingType)) {
-    invalidateServiceBuildingCache();
-  }
-
-  return { ...state, grid: newGrid };
-}
-
-// Find the origin tile of a multi-tile building that contains the given tile
-// Returns null if the tile is not part of a multi-tile building
-// PERF: Now uses cached originX/originY on empty tiles for O(1) lookup instead of O(16) search
-function findBuildingOrigin(
-  grid: Tile[][],
-  x: number,
-  y: number,
-  gridSize: number
-): { originX: number; originY: number; buildingType: BuildingType } | null {
-  const tile = grid[y]?.[x];
-  if (!tile) return null;
-
-  // If this tile has an actual building (not empty), check if it's multi-tile
-  if (tile.building.type !== 'empty' && tile.building.type !== 'grass' &&
-      tile.building.type !== 'water' && tile.building.type !== 'road' &&
-      tile.building.type !== 'rail' && tile.building.type !== 'tree') {
-    const size = getBuildingSize(tile.building.type);
-    if (size.width > 1 || size.height > 1) {
-      return { originX: x, originY: y, buildingType: tile.building.type };
-    }
-    return null; // Single-tile building
-  }
-
-  // If this is an 'empty' tile, it might be part of a multi-tile building
-  if (tile.building.type === 'empty') {
-    // PERF: Use cached origin coordinates if available (O(1) lookup)
-    if (tile.building.originX !== undefined && tile.building.originY !== undefined) {
-      const originTile = grid[tile.building.originY]?.[tile.building.originX];
-      if (originTile && originTile.building.type !== 'empty' &&
-          originTile.building.type !== 'grass') {
-        return {
-          originX: tile.building.originX,
-          originY: tile.building.originY,
-          buildingType: originTile.building.type
-        };
-      }
-      // Origin was demolished, this empty tile is orphaned
-      return null;
-    }
-
-    // Fallback: Search nearby tiles to find the origin (for legacy saves without cached origins)
-    const maxSize = 4;
-    for (let dy = 0; dy < maxSize; dy++) {
-      for (let dx = 0; dx < maxSize; dx++) {
-        const checkX = x - dx;
-        const checkY = y - dy;
-        if (checkX >= 0 && checkY >= 0 && checkX < gridSize && checkY < gridSize) {
-          const checkTile = grid[checkY][checkX];
-          if (checkTile.building.type !== 'empty' &&
-              checkTile.building.type !== 'grass' &&
-              checkTile.building.type !== 'water' &&
-              checkTile.building.type !== 'road' &&
-              checkTile.building.type !== 'rail' &&
-              checkTile.building.type !== 'tree') {
-            const size = getBuildingSize(checkTile.building.type);
-            // Check if this building's footprint includes our original tile
-            if (x >= checkX && x < checkX + size.width &&
-                y >= checkY && y < checkY + size.height) {
-              return { originX: checkX, originY: checkY, buildingType: checkTile.building.type };
-            }
-          }
-        }
-      }
-    }
-  }
-
-  return null;
-}
-
-// Bulldoze a tile (or entire multi-tile building if applicable)
-export function bulldozeTile(state: GameState, x: number, y: number): GameState {
-  const tile = state.grid[y]?.[x];
-  if (!tile) return state;
-  if (tile.building.type === 'water') return state;
-
-  const newGrid = state.grid.map(row => row.map(t => ({ ...t, building: { ...t.building } })));
-  
-  // Check if this tile is part of a multi-tile building
-  const origin = findBuildingOrigin(newGrid, x, y, state.gridSize);
-  
-  if (origin) {
-    // Bulldoze the entire multi-tile building
-    const size = getBuildingSize(origin.buildingType);
-    for (let dy = 0; dy < size.height; dy++) {
-      for (let dx = 0; dx < size.width; dx++) {
-        const clearX = origin.originX + dx;
-        const clearY = origin.originY + dy;
-        if (clearX < state.gridSize && clearY < state.gridSize) {
-          newGrid[clearY][clearX].building = createBuilding('grass');
-          newGrid[clearY][clearX].zone = 'none';
-          newGrid[clearY][clearX].hasRailOverlay = false; // Clear rail overlay
-          // Don't remove subway when bulldozing surface buildings
-        }
-      }
-    }
-  } else {
-    // Single tile bulldoze
-    newGrid[y][x].building = createBuilding('grass');
-    newGrid[y][x].zone = 'none';
-    newGrid[y][x].hasRailOverlay = false; // Clear rail overlay
-    // Don't remove subway when bulldozing surface buildings
-  }
-
-  // PERF: Invalidate service building cache if we demolished a service building
-  const demolishedType = origin ? origin.buildingType : tile.building.type;
-  if (SERVICE_BUILDING_TYPES.has(demolishedType)) {
-    invalidateServiceBuildingCache();
-  }
-
-  return { ...state, grid: newGrid };
-}
-
-// Place a subway line underground (doesn't affect surface buildings)
-export function placeSubway(state: GameState, x: number, y: number): GameState {
-  const tile = state.grid[y]?.[x];
-  if (!tile) return state;
-  
-  // Can't place subway under water
-  if (tile.building.type === 'water') return state;
-  
-  // Already has subway
-  if (tile.hasSubway) return state;
-
-  const newGrid = state.grid.map(row => row.map(t => ({ ...t, building: { ...t.building } })));
-  newGrid[y][x].hasSubway = true;
-
-  return { ...state, grid: newGrid };
-}
-
-// Remove subway from a tile
-export function removeSubway(state: GameState, x: number, y: number): GameState {
-  const tile = state.grid[y]?.[x];
-  if (!tile) return state;
-  
-  // No subway to remove
-  if (!tile.hasSubway) return state;
-
-  const newGrid = state.grid.map(row => row.map(t => ({ ...t, building: { ...t.building } })));
-  newGrid[y][x].hasSubway = false;
-
-  return { ...state, grid: newGrid };
 }
 
 // Generate a random advanced city state with developed zones, infrastructure, and buildings

@@ -16,7 +16,7 @@ import {
   drawCrosswalks,
   ROAD_COLORS,
   drawRoadArrow,
-} from '@/components/game/trafficSystem';
+} from '@/components/game/systems/vehicles/TrafficSystem';
 
 export interface RoadRenderContext {
   ctx: CanvasRenderingContext2D;

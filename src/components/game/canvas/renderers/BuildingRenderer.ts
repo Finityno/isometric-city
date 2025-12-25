@@ -392,7 +392,7 @@ export function drawBuilding(context: BuildingRenderContext, tile: Tile, x: numb
       };
     } else {
       // getSpriteCoords handles building type to sprite key mapping
-      coords = getSpriteCoords(buildingType, sheetWidth, sheetHeight);
+      coords = getSpriteCoords(buildingType, sheetWidth, sheetHeight, activePack);
 
       // Special cropping for factory_large base sprite - crop bottom to remove asset below
       if (buildingType === 'factory_large' && coords) {

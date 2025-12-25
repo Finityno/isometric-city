@@ -4,7 +4,7 @@
  */
 
 import { Tile } from '@/types/game';
-import { TILE_WIDTH, TILE_HEIGHT, CarDirection } from './types';
+import { TILE_WIDTH, TILE_HEIGHT, CarDirection } from '../../types';
 
 // ============================================================================
 // Performance: Object Pooling and Reusable Objects
