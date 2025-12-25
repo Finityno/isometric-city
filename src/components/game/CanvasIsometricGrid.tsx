@@ -125,6 +125,19 @@ const specialTypes = new Set(['hospital', 'fire_station', 'police_station', 'pow
 const residentialTypes = new Set(['house_small', 'house_medium', 'mansion', 'apartment_low', 'apartment_high']);
 const commercialTypes = new Set(['shop_small', 'shop_medium', 'office_low', 'office_high', 'mall']);
 
+// Lighting cache type - pre-computed light source data for consistent rendering
+type CachedLight = {
+  gridX: number;
+  gridY: number;
+  screenX: number;
+  screenY: number;
+  type: 'road' | 'building';
+  buildingType?: string;
+  seed: number;
+  isSpecial?: boolean;
+  specialType?: string;
+};
+
 // Props interface for CanvasIsometricGrid
 export interface CanvasIsometricGridProps {
   overlayMode: OverlayMode;
@@ -266,22 +279,32 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
   const roadAnalysisCacheVersionRef = useRef(-1);
 
   // LIGHTING CACHE: Pre-compute all light sources based on grid (not viewport)
-  // This ensures lights stay in consistent positions when scrolling/zooming
-  type CachedLight = {
-    gridX: number;
-    gridY: number;
-    screenX: number;  // Pre-computed screen position
-    screenY: number;
-    type: 'road' | 'building';
-    buildingType?: string;
-    seed: number;  // Deterministic seed for window randomization
-    isSpecial?: boolean;  // Hospital, fire station, etc.
-    specialType?: string;
-  };
-  const lightingCacheRef = useRef<{
-    lights: CachedLight[];
-    gridVersion: number;
-  }>({ lights: [], gridVersion: -1 });
+  // Uses useMemo for synchronous, dependency-tracked caching
+  const lightingCache = useMemo((): CachedLight[] => {
+    const lights: CachedLight[] = [];
+
+    for (let y = 0; y < gridSize; y++) {
+      for (let x = 0; x < gridSize; x++) {
+        const tile = grid[y][x];
+        const buildingType = tile.building.type;
+        const screenX = (x - y) * TILE_WIDTH / 2;
+        const screenY = (x + y) * TILE_HEIGHT / 2;
+        const seed = x * 10000 + y;
+
+        if (buildingType === 'road') {
+          lights.push({ gridX: x, gridY: y, screenX, screenY, type: 'road', seed });
+        } else if (!nonLitTypes.has(buildingType) && tile.building.powered) {
+          const isSpecial = specialTypes.has(buildingType);
+          lights.push({
+            gridX: x, gridY: y, screenX, screenY,
+            type: 'building', buildingType, seed,
+            isSpecial, specialType: isSpecial ? buildingType : undefined,
+          });
+        }
+      }
+    }
+    return lights;
+  }, [grid, gridSize]);
 
   // PERF: Render queue arrays cached across frames to reduce GC pressure
   // These are cleared at the start of each render frame with .length = 0
@@ -3324,56 +3347,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     return () => cancelAnimationFrame(animationFrameId);
   }, [canvasSize.width, canvasSize.height, updateCars, drawCars, spawnCrimeIncidents, updateCrimeIncidents, updateEmergencyVehicles, drawEmergencyVehicles, updatePedestrians, drawPedestrians, drawRecreationPedestrians, updateAirplanes, drawAirplanes, updateHelicopters, drawHelicopters, updateSeaplanes, drawSeaplanes, updateBoats, drawBoats, updateBarges, drawBarges, updateTrains, drawTrainsCallback, drawIncidentIndicators, updateFireworks, drawFireworks, updateSmog, drawSmog, visualHour, isMobile, grid, gridSize, speed]);
   
-  // Day/Night cycle lighting rendering - with CACHED light positions for consistency
-  // Step 1: Rebuild light cache when grid changes (not on scroll/zoom)
-  useEffect(() => {
-    const currentVersion = gridVersionRef.current;
-    if (lightingCacheRef.current.gridVersion === currentVersion) return;
-
-    // Rebuild the light cache from scratch
-    const lights: typeof lightingCacheRef.current.lights = [];
-
-    // Iterate through ENTIRE grid to cache ALL potential light sources
-    for (let y = 0; y < gridSize; y++) {
-      for (let x = 0; x < gridSize; x++) {
-        const tile = grid[y][x];
-        const buildingType = tile.building.type;
-
-        // Pre-compute screen position (deterministic, won't change)
-        const screenX = (x - y) * TILE_WIDTH / 2;
-        const screenY = (x + y) * TILE_HEIGHT / 2;
-        const seed = x * 10000 + y; // Deterministic seed for this tile
-
-        if (buildingType === 'road') {
-          lights.push({
-            gridX: x,
-            gridY: y,
-            screenX,
-            screenY,
-            type: 'road',
-            seed,
-          });
-        } else if (!nonLitTypes.has(buildingType) && tile.building.powered) {
-          const isSpecial = specialTypes.has(buildingType);
-          lights.push({
-            gridX: x,
-            gridY: y,
-            screenX,
-            screenY,
-            type: 'building',
-            buildingType,
-            seed,
-            isSpecial,
-            specialType: isSpecial ? buildingType : undefined,
-          });
-        }
-      }
-    }
-
-    lightingCacheRef.current = { lights, gridVersion: currentVersion };
-  }, [grid, gridSize]);
-
-  // Step 2: Render lighting using cached positions (fast viewport filtering only)
+  // Day/Night cycle lighting rendering - uses memoized lightingCache for consistency
   useEffect(() => {
     const canvas = lightingCanvasRef.current;
     if (!canvas) return;
@@ -3444,7 +3418,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     };
 
     // Get cached lights and filter by viewport
-    const cachedLights = lightingCacheRef.current.lights;
+    const cachedLights = lightingCache;
 
     // Filter visible lights from cache - NO LIMIT, show ALL lights in viewport
     // Sampling is only used on mobile or at very low zoom for performance
@@ -3620,8 +3594,8 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     ctx.restore();
     ctx.globalCompositeOperation = 'source-over';
 
-  }, [visualHour, offset, zoom, canvasSize.width, canvasSize.height, isMobile, isPanning]);
-  
+  }, [lightingCache, visualHour, offset, zoom, canvasSize.width, canvasSize.height, isMobile, isPanning]);
+
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button === 1 || (e.button === 0 && e.altKey)) {
       setIsPanning(true);

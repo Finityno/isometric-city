@@ -994,8 +994,13 @@ let simulationInterval: ReturnType<typeof setInterval> | null = null;
 let saveInterval: ReturnType<typeof setInterval> | null = null;
 let lastSaveTime = 0;
 
-// Subscribe to speed changes to manage simulation interval
 if (typeof window !== 'undefined') {
+  // Initialize store from localStorage on module load.
+  // This runs once when the module is first imported in the browser,
+  // guaranteeing state is ready before any React component mounts.
+  useGameStore.getState().initialize();
+
+  // Subscribe to speed changes to manage simulation interval
   useGameStore.subscribe(
     (state) => state.speed,
     (speed) => {
