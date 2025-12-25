@@ -9,9 +9,9 @@ import {
   GameState,
   SavedCityMeta,
   Tool,
-  TOOL_INFO,
   ZoneType,
 } from '@/types/game';
+import { TOOL_INFO } from '@/data';
 import {
   bulldozeTile,
   createInitialGameState,

@@ -22,6 +22,7 @@ import {
   WAKE_SPAWN_INTERVAL,
 } from './constants';
 import { findBays, getRandomBayTile, isOverWater, BayInfo } from './gridFinders';
+import { clamp, normalizeAngleFast } from '@/lib/utils/math';
 
 // Pre-computed constants to avoid repeated calculations
 const TWO_PI = Math.PI * 2;
@@ -81,18 +82,8 @@ function recycleWakeParticle(particle: WakeParticle): void {
   }
 }
 
-// Inline angle normalization (faster than function call with modulo)
-function normalizeAngle(angle: number): number {
-  // Fast normalization using bitwise floor for positive angles
-  if (angle >= 0 && angle < TWO_PI) return angle;
-  angle = angle - TWO_PI * Math.floor(angle * INV_TWO_PI);
-  return angle < 0 ? angle + TWO_PI : angle;
-}
-
-// Inline clamp function
-function clamp(value: number, min: number, max: number): number {
-  return value < min ? min : value > max ? max : value;
-}
+// Note: normalizeAngle and clamp are now imported from @/lib/utils/math
+// Using normalizeAngleFast from the shared utilities (same implementation)
 
 export interface SeaplaneSystemRefs {
   seaplanesRef: React.MutableRefObject<Seaplane[]>;

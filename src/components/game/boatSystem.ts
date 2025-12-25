@@ -12,6 +12,7 @@ import {
 import { gridToScreen } from './utils';
 import { findMarinasAndPiers, findAdjacentWaterTile, generateTourWaypoints, DockInfo } from './gridFinders';
 import { Tile } from '@/types/game';
+import { normalizeAngleDiff } from '@/lib/utils/math';
 
 // ============================================================================
 // PERFORMANCE OPTIMIZATIONS
@@ -113,12 +114,7 @@ const SPEED_MULTIPLIERS = [1, 1, 1.5, 2] as const;
 const TWO_PI = Math.PI * 2;
 const PI = Math.PI;
 
-// PERF: Inline angle normalization (avoids function call)
-function normalizeAngleDiff(diff: number): number {
-  while (diff > PI) diff -= TWO_PI;
-  while (diff < -PI) diff += TWO_PI;
-  return diff;
-}
+// Note: normalizeAngleDiff is now imported from @/lib/utils/math
 
 // PERF: HSL color lookup table for deck colors (avoids string comparison in render)
 const DECK_COLOR_MAP: Record<string, string> = {

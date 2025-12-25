@@ -6,7 +6,8 @@ import {
   useMoney,
   useSetTool,
 } from '@/store/selectors';
-import { Tool, TOOL_INFO } from '@/types/game';
+import { Tool } from '@/types/game';
+import { TOOL_INFO } from '@/data';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import {

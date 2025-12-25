@@ -12,7 +12,8 @@ import {
   useGameActions,
   useCityStats,
 } from '@/store/selectors';
-import { TOOL_INFO, Tile, BuildingType, AdjacentCity } from '@/types/game';
+import { Tile, BuildingType, AdjacentCity } from '@/types/game';
+import { TOOL_INFO } from '@/data';
 import { getBuildingSize, requiresWaterAdjacency, getWaterAdjacency, getRoadAdjacency } from '@/lib/simulation';
 import { FireIcon, SafetyIcon } from '@/components/ui/Icons';
 import { getSpriteCoords, BUILDING_TO_SPRITE, SPRITE_VERTICAL_OFFSETS, SPRITE_HORIZONTAL_OFFSETS, getActiveSpritePack } from '@/lib/renderConfig';
@@ -58,6 +59,17 @@ import {
   screenToGrid,
   invalidatePathCache,
 } from '@/components/game/utils';
+import {
+  createMouseDownHandler,
+  createMouseMoveHandler,
+  createMouseUpHandler,
+  createTouchStartHandler,
+  createTouchMoveHandler,
+  createTouchEndHandler,
+  createWheelHandler,
+  clampOffset as clampOffsetUtil,
+  getMapBounds as getMapBoundsUtil,
+} from '@/components/game/canvas/input';
 import {
   drawGreenBaseTile,
   drawGreyBaseTile,
@@ -3592,108 +3604,65 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     return () => cancelAnimationFrame(animationFrameId);
   }, [canvasSize.width, canvasSize.height, updateCars, drawCars, spawnCrimeIncidents, updateCrimeIncidents, updateEmergencyVehicles, drawEmergencyVehicles, updatePedestrians, drawPedestrians, drawRecreationPedestrians, updateAirplanes, drawAirplanes, updateHelicopters, drawHelicopters, updateSeaplanes, drawSeaplanes, updateBoats, drawBoats, updateBarges, drawBarges, updateTrains, drawTrainsCallback, drawIncidentIndicators, updateFireworks, drawFireworks, updateSmog, drawSmog, drawLighting, visualHour, isMobile, grid, gridSize, speed]);
 
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    if (e.button === 1 || (e.button === 0 && e.altKey)) {
-      setIsPanning(true);
-      setDragStart({ x: e.clientX - offset.x, y: e.clientY - offset.y });
-      panCandidateRef.current = null;
-      // Clear hover when panning starts
-      hoveredTileRef.current = null;
-      setHoveredTile(null);
-      setHoveredIncident(null);
-      e.preventDefault();
-      return;
-    }
-
-    if (e.button === 0) {
-      const rect = containerRef.current?.getBoundingClientRect();
-      if (rect) {
-        const mouseX = (e.clientX - rect.left) / zoom;
-        const mouseY = (e.clientY - rect.top) / zoom;
-        const { gridX, gridY } = screenToGrid(mouseX, mouseY, offset.x / zoom, offset.y / zoom);
-
-        const isInsideGrid = gridX >= 0 && gridX < gridSize && gridY >= 0 && gridY < gridSize;
-        if (!isInsideGrid) {
-          setIsPanning(true);
-          setDragStart({ x: e.clientX - offset.x, y: e.clientY - offset.y });
-          panCandidateRef.current = null;
-          // Clear hover when panning starts
-          hoveredTileRef.current = null;
-          setHoveredTile(null);
-          setHoveredIncident(null);
-          return;
-        }
-
-        if (selectedTool === 'select') {
-          const tile = grid[gridY]?.[gridX];
-          const isOpenTile = tile?.building.type === 'empty' ||
-            tile?.building.type === 'grass' ||
-            tile?.building.type === 'water';
-          if (isOpenTile) {
-            panCandidateRef.current = { startX: e.clientX, startY: e.clientY, gridX, gridY };
-            return;
-          }
-          panCandidateRef.current = null;
-          // For multi-tile buildings, select the origin tile
-          const origin = findBuildingOrigin(gridX, gridY);
-          if (origin) {
-            setSelectedTile({ x: origin.originX, y: origin.originY });
-          } else {
-            setSelectedTile({ x: gridX, y: gridY });
-          }
-        } else if (showsDragGrid) {
-          panCandidateRef.current = null;
-          // Start drag rectangle selection for zoning tools
-          setDragStartTile({ x: gridX, y: gridY });
-          setDragEndTile({ x: gridX, y: gridY });
-          setIsDragging(true);
-        } else if (supportsDragPlace) {
-          panCandidateRef.current = null;
-          // For roads, bulldoze, and other tools, start drag-to-place
-          setDragStartTile({ x: gridX, y: gridY });
-          setDragEndTile({ x: gridX, y: gridY });
-          setIsDragging(true);
-          // Reset road drawing state for new drag
-          setRoadDrawDirection(null);
-          placedRoadTilesRef.current.clear();
-          // Place immediately on first click
-          placeAtTile(gridX, gridY);
-          // Track initial tile for roads, rail, and subways
-          if (selectedTool === 'road' || selectedTool === 'rail' || selectedTool === 'subway') {
-            placedRoadTilesRef.current.add(`${gridX},${gridY}`);
-          }
-        }
+  const handleMouseDown = useCallback(
+    createMouseDownHandler(
+      {
+        containerRef,
+        gridSize,
+        grid,
+        canvasSize,
+        selectedTool,
+        showsDragGrid,
+        supportsDragPlace,
+      },
+      {
+        offset,
+        zoom,
+        isPanning,
+        dragStart,
+        isDragging,
+        dragStartTile,
+        dragEndTile,
+        roadDrawDirection,
+      },
+      {
+        setIsPanning,
+        setDragStart,
+        setOffset,
+        setSelectedTile,
+        setDragStartTile,
+        setDragEndTile,
+        setIsDragging,
+        setRoadDrawDirection,
+        setHoveredTile,
+        setHoveredIncident,
+        placeAtTile,
+        findBuildingOrigin,
+        requestHoverCanvasRedraw,
+        checkAndDiscoverCities,
+        setCityConnectionDialog,
+      },
+      {
+        panCandidateRef,
+        hoveredTileRef,
+        lastHoverStateUpdateRef,
+        activeCrimeIncidentsRef,
+        placedRoadTilesRef,
+        worldStateRef,
       }
-    }
-  }, [offset, gridSize, selectedTool, placeAtTile, zoom, showsDragGrid, supportsDragPlace, setSelectedTile, findBuildingOrigin, grid]);
-  
+    ),
+    [offset, gridSize, selectedTool, placeAtTile, zoom, showsDragGrid, supportsDragPlace, setSelectedTile, findBuildingOrigin, grid, canvasSize, isPanning, dragStart, isDragging, dragStartTile, dragEndTile, roadDrawDirection, requestHoverCanvasRedraw, checkAndDiscoverCities]
+  );
+
   // Calculate camera bounds based on grid size
   const getMapBounds = useCallback((currentZoom: number, canvasW: number, canvasH: number) => {
-    const n = gridSize;
-    const padding = 100; // Allow some over-scroll
-    
-    // Map bounds in world coordinates
-    const mapLeft = -(n - 1) * TILE_WIDTH / 2;
-    const mapRight = (n - 1) * TILE_WIDTH / 2;
-    const mapTop = 0;
-    const mapBottom = (n - 1) * TILE_HEIGHT;
-    
-    const minOffsetX = padding - mapRight * currentZoom;
-    const maxOffsetX = canvasW - padding - mapLeft * currentZoom;
-    const minOffsetY = padding - mapBottom * currentZoom;
-    const maxOffsetY = canvasH - padding - mapTop * currentZoom;
-    
-    return { minOffsetX, maxOffsetX, minOffsetY, maxOffsetY };
+    return getMapBoundsUtil(gridSize, currentZoom, canvasW, canvasH);
   }, [gridSize]);
-  
+
   // Clamp offset to keep camera within reasonable bounds
   const clampOffset = useCallback((newOffset: { x: number; y: number }, currentZoom: number) => {
-    const bounds = getMapBounds(currentZoom, canvasSize.width, canvasSize.height);
-    return {
-      x: Math.max(bounds.minOffsetX, Math.min(bounds.maxOffsetX, newOffset.x)),
-      y: Math.max(bounds.minOffsetY, Math.min(bounds.maxOffsetY, newOffset.y)),
-    };
-  }, [getMapBounds, canvasSize.width, canvasSize.height]);
+    return clampOffsetUtil(newOffset, currentZoom, gridSize, canvasSize.width, canvasSize.height);
+  }, [gridSize, canvasSize.width, canvasSize.height]);
 
   // Handle minimap navigation - center the view on the target tile
   useEffect(() => {
@@ -3723,268 +3692,116 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     onNavigationComplete?.();
   }, [navigationTarget, zoom, canvasSize.width, canvasSize.height, getMapBounds, onNavigationComplete]);
 
-  const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    // PERF: Read from worldStateRef to reduce callback dependencies
-    const { offset: currentOffset, zoom: currentZoom, gridSize: currentGridSize, grid: currentGrid } = worldStateRef.current;
-
-    if (!isPanning && panCandidateRef.current) {
-      const { startX, startY } = panCandidateRef.current;
-      const dx = e.clientX - startX;
-      const dy = e.clientY - startY;
-      if (Math.abs(dx) >= PAN_DRAG_THRESHOLD || Math.abs(dy) >= PAN_DRAG_THRESHOLD) {
-        setIsPanning(true);
-        setDragStart({ x: startX - currentOffset.x, y: startY - currentOffset.y });
-        panCandidateRef.current = null;
-        // Clear hover when panning starts
-        hoveredTileRef.current = null;
-        setHoveredTile(null);
-        setHoveredIncident(null);
-        const newOffset = {
-          x: e.clientX - (startX - currentOffset.x),
-          y: e.clientY - (startY - currentOffset.y),
-        };
-        setOffset(clampOffset(newOffset, currentZoom));
-        return;
+  const handleMouseMove = useCallback(
+    createMouseMoveHandler(
+      {
+        containerRef,
+        gridSize,
+        grid,
+        canvasSize,
+        selectedTool,
+        showsDragGrid,
+        supportsDragPlace,
+      },
+      {
+        offset,
+        zoom,
+        isPanning,
+        dragStart,
+        isDragging,
+        dragStartTile,
+        dragEndTile,
+        roadDrawDirection,
+      },
+      {
+        setIsPanning,
+        setDragStart,
+        setOffset,
+        setSelectedTile,
+        setDragStartTile,
+        setDragEndTile,
+        setIsDragging,
+        setRoadDrawDirection,
+        setHoveredTile,
+        setHoveredIncident,
+        placeAtTile,
+        findBuildingOrigin,
+        requestHoverCanvasRedraw,
+        checkAndDiscoverCities,
+        setCityConnectionDialog,
+      },
+      {
+        panCandidateRef,
+        hoveredTileRef,
+        lastHoverStateUpdateRef,
+        activeCrimeIncidentsRef,
+        placedRoadTilesRef,
+        worldStateRef,
       }
-    }
-
-    // While panning, don't track hover at all
-    if (isPanning) {
-      const newOffset = {
-        x: e.clientX - dragStart.x,
-        y: e.clientY - dragStart.y,
-      };
-      setOffset(clampOffset(newOffset, currentZoom));
-      return;
-    }
-
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (rect) {
-      const mouseX = (e.clientX - rect.left) / currentZoom;
-      const mouseY = (e.clientY - rect.top) / currentZoom;
-      const { gridX, gridY } = screenToGrid(mouseX, mouseY, currentOffset.x / currentZoom, currentOffset.y / currentZoom);
-
-      if (gridX >= 0 && gridX < currentGridSize && gridY >= 0 && gridY < currentGridSize) {
-        // PERF: Update ref directly to avoid React re-renders, then request canvas redraw
-        const prevHover = hoveredTileRef.current;
-        if (!prevHover || prevHover.x !== gridX || prevHover.y !== gridY) {
-          hoveredTileRef.current = { x: gridX, y: gridY };
-          requestHoverCanvasRedraw();
-
-          // Throttle state updates for tooltip display (only update every 100ms)
-          const now = performance.now();
-          if (now - lastHoverStateUpdateRef.current > 100) {
-            lastHoverStateUpdateRef.current = now;
-            setHoveredTile({ x: gridX, y: gridY });
-          }
-        }
-        
-        // Check for fire or crime incidents at this tile for tooltip display
-        const tile = currentGrid[gridY]?.[gridX];
-        const crimeKey = `${gridX},${gridY}`;
-        const crimeIncident = activeCrimeIncidentsRef.current.get(crimeKey);
-        
-        if (tile?.building.onFire) {
-          // Fire incident
-          setHoveredIncident({
-            x: gridX,
-            y: gridY,
-            type: 'fire',
-            screenX: e.clientX,
-            screenY: e.clientY,
-          });
-        } else if (crimeIncident) {
-          // Crime incident
-          setHoveredIncident({
-            x: gridX,
-            y: gridY,
-            type: 'crime',
-            crimeType: crimeIncident.type,
-            screenX: e.clientX,
-            screenY: e.clientY,
-          });
-        } else {
-          // No incident at this tile
-          setHoveredIncident(null);
-        }
-        
-        // Update drag rectangle end point for zoning tools
-        if (isDragging && showsDragGrid && dragStartTile) {
-          setDragEndTile({ x: gridX, y: gridY });
-        }
-        // For roads, rail, and subways, use straight-line snapping
-        else if (isDragging && (selectedTool === 'road' || selectedTool === 'rail' || selectedTool === 'subway') && dragStartTile) {
-          const dx = Math.abs(gridX - dragStartTile.x);
-          const dy = Math.abs(gridY - dragStartTile.y);
-          
-          // Lock direction after moving at least 1 tile
-          let direction = roadDrawDirection;
-          if (!direction && (dx > 0 || dy > 0)) {
-            // Lock to the axis with more movement, or horizontal if equal
-            direction = dx >= dy ? 'h' : 'v';
-            setRoadDrawDirection(direction);
-          }
-          
-          // Calculate target position along the locked axis
-          let targetX = gridX;
-          let targetY = gridY;
-          if (direction === 'h') {
-            targetY = dragStartTile.y; // Lock to horizontal
-          } else if (direction === 'v') {
-            targetX = dragStartTile.x; // Lock to vertical
-          }
-          
-          setDragEndTile({ x: targetX, y: targetY });
-          
-          // Place all tiles from start to target in a straight line
-          const minX = Math.min(dragStartTile.x, targetX);
-          const maxX = Math.max(dragStartTile.x, targetX);
-          const minY = Math.min(dragStartTile.y, targetY);
-          const maxY = Math.max(dragStartTile.y, targetY);
-          
-          for (let x = minX; x <= maxX; x++) {
-            for (let y = minY; y <= maxY; y++) {
-              const key = `${x},${y}`;
-              if (!placedRoadTilesRef.current.has(key)) {
-                placeAtTile(x, y);
-                placedRoadTilesRef.current.add(key);
-              }
-            }
-          }
-        }
-        // For other drag-to-place tools, place continuously
-        else if (isDragging && supportsDragPlace && dragStartTile) {
-          placeAtTile(gridX, gridY);
-        }
-      }
-    }
-  }, [isPanning, dragStart, isDragging, showsDragGrid, dragStartTile, selectedTool, roadDrawDirection, supportsDragPlace, placeAtTile, clampOffset, requestHoverCanvasRedraw]);
+    ),
+    [isPanning, dragStart, isDragging, showsDragGrid, dragStartTile, selectedTool, roadDrawDirection, supportsDragPlace, placeAtTile, requestHoverCanvasRedraw, containerRef, gridSize, grid, canvasSize, offset, zoom, dragEndTile, findBuildingOrigin, checkAndDiscoverCities]
+  );
   
-  const handleMouseUp = useCallback(() => {
-    if (panCandidateRef.current && !isPanning && selectedTool === 'select') {
-      const { gridX, gridY } = panCandidateRef.current;
-      panCandidateRef.current = null;
-      const origin = findBuildingOrigin(gridX, gridY);
-      if (origin) {
-        setSelectedTile({ x: origin.originX, y: origin.originY });
-      } else {
-        setSelectedTile({ x: gridX, y: gridY });
+  const handleMouseUp = useCallback(
+    createMouseUpHandler(
+      {
+        containerRef,
+        gridSize,
+        grid,
+        canvasSize,
+        selectedTool,
+        showsDragGrid,
+        supportsDragPlace,
+      },
+      {
+        offset,
+        zoom,
+        isPanning,
+        dragStart,
+        isDragging,
+        dragStartTile,
+        dragEndTile,
+        roadDrawDirection,
+      },
+      {
+        setIsPanning,
+        setDragStart,
+        setOffset,
+        setSelectedTile,
+        setDragStartTile,
+        setDragEndTile,
+        setIsDragging,
+        setRoadDrawDirection,
+        setHoveredTile,
+        setHoveredIncident,
+        placeAtTile,
+        findBuildingOrigin,
+        requestHoverCanvasRedraw,
+        checkAndDiscoverCities,
+        setCityConnectionDialog,
+      },
+      {
+        panCandidateRef,
+        hoveredTileRef,
+        lastHoverStateUpdateRef,
+        activeCrimeIncidentsRef,
+        placedRoadTilesRef,
+        worldStateRef,
       }
-    } else {
-      panCandidateRef.current = null;
-    }
-    // Fill the drag rectangle when mouse is released (only for zoning tools)
-    if (isDragging && dragStartTile && dragEndTile && showsDragGrid) {
-      const minX = Math.min(dragStartTile.x, dragEndTile.x);
-      const maxX = Math.max(dragStartTile.x, dragEndTile.x);
-      const minY = Math.min(dragStartTile.y, dragEndTile.y);
-      const maxY = Math.max(dragStartTile.y, dragEndTile.y);
-      
-      for (let x = minX; x <= maxX; x++) {
-        for (let y = minY; y <= maxY; y++) {
-          placeAtTile(x, y);
-        }
-      }
-    }
-    
-    // After placing roads or rail, check if any cities should be discovered
-    // This happens after any road/rail placement (drag or click) reaches an edge
-    if (isDragging && (selectedTool === 'road' || selectedTool === 'rail')) {
-      // Use setTimeout to allow state to update first, then check for discoverable cities
-      setTimeout(() => {
-        checkAndDiscoverCities((discoveredCity) => {
-          // Show dialog for the newly discovered city
-          setCityConnectionDialog({ direction: discoveredCity.direction });
-        });
-      }, 50);
-    }
-    
-    // Clear drag state
-    setIsDragging(false);
-    setDragStartTile(null);
-    setDragEndTile(null);
-    setIsPanning(false);
-    setRoadDrawDirection(null);
-    placedRoadTilesRef.current.clear();
-    
-    // Clear hovered tile when mouse leaves
-    if (!containerRef.current) {
-      hoveredTileRef.current = null;
-      setHoveredTile(null);
-      requestHoverCanvasRedraw();
-    }
-  }, [isDragging, showsDragGrid, dragStartTile, placeAtTile, selectedTool, dragEndTile, checkAndDiscoverCities, findBuildingOrigin, setSelectedTile, isPanning, requestHoverCanvasRedraw]);
+    ),
+    [isDragging, showsDragGrid, dragStartTile, placeAtTile, selectedTool, dragEndTile, checkAndDiscoverCities, findBuildingOrigin, setSelectedTile, isPanning, requestHoverCanvasRedraw, containerRef, gridSize, grid, canvasSize, offset, zoom, dragStart, roadDrawDirection]
+  );
   
   // Wheel handler - use useCallback to get stable reference that captures latest state
-  const handleWheel = useCallback((e: WheelEvent) => {
-    // Prevent browser zoom and page scroll
-    e.preventDefault();
-    e.stopPropagation();
-
-    // Clear hover when scrolling/zooming with wheel/trackpad
-    isWheelScrollingRef.current = true;
-    hoveredTileRef.current = null;
-
-    // Reset the wheel scrolling flag after a short delay of no wheel events
-    if (wheelScrollTimeoutRef.current) {
-      clearTimeout(wheelScrollTimeoutRef.current);
-    }
-    wheelScrollTimeoutRef.current = setTimeout(() => {
-      isWheelScrollingRef.current = false;
-    }, 150);
-
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect) return;
-
-    // Trackpad pinch-to-zoom sends ctrlKey=true (browser synthesizes this)
-    // Mouse wheel zoom: use Ctrl/Cmd + scroll OR regular scroll
-    const isPinchZoom = e.ctrlKey || e.metaKey;
-
-    if (isPinchZoom) {
-      // ZOOM: Pinch gesture or Ctrl+wheel
-      const mouseX = e.clientX - rect.left;
-      const mouseY = e.clientY - rect.top;
-
-      // Use deltaY for zoom amount - pinch gestures have smaller deltas
-      const zoomDelta = -e.deltaY * 0.01;
-      const newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom * (1 + zoomDelta)));
-
-      if (Math.abs(newZoom - zoom) < 0.001) return;
-
-      // World position under the mouse before zoom
-      const worldX = (mouseX - offset.x) / zoom;
-      const worldY = (mouseY - offset.y) / zoom;
-
-      // After zoom, keep the same world position under the mouse
-      const newOffsetX = mouseX - worldX * newZoom;
-      const newOffsetY = mouseY - worldY * newZoom;
-
-      const clampedOffset = clampOffset({ x: newOffsetX, y: newOffsetY }, newZoom);
-      setOffset(clampedOffset);
-      setZoom(newZoom);
-    } else {
-      // PAN: Two-finger scroll on trackpad or regular scroll wheel
-      // deltaMode: 0 = pixels, 1 = lines, 2 = pages
-      const multiplier = e.deltaMode === 1 ? 20 : e.deltaMode === 2 ? 400 : 1;
-      const deltaX = e.deltaX * multiplier;
-      const deltaY = e.deltaY * multiplier;
-
-      // If mostly horizontal scroll with minimal vertical, treat as pure horizontal pan
-      // This prevents jittery up/down movement during horizontal trackpad gestures
-      const isHorizontalDominant = Math.abs(deltaX) > Math.abs(deltaY) * 2;
-      const effectiveDeltaY = isHorizontalDominant ? 0 : deltaY;
-
-      // Skip tiny movements to reduce jitter
-      if (Math.abs(deltaX) < 0.5 && Math.abs(effectiveDeltaY) < 0.5) return;
-
-      const newOffset = {
-        x: offset.x - deltaX,
-        y: offset.y - effectiveDeltaY,
-      };
-
-      setOffset(clampOffset(newOffset, zoom));
-    }
-  }, [zoom, offset, clampOffset, setOffset, setZoom]);
+  const handleWheel = useCallback(
+    createWheelHandler(
+      { gridSize, canvasSize },
+      { offset, zoom },
+      { setOffset, setZoom },
+      { containerRef, isWheelScrollingRef, wheelScrollTimeoutRef }
+    ),
+    [zoom, offset, gridSize, canvasSize]
+  );
 
   // Attach wheel event listener once with passive: false to allow preventDefault
   // This prevents browser zoom (Ctrl+scroll) from taking over
@@ -3997,145 +3814,89 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     return () => container.removeEventListener('wheel', handleWheel);
   }, [handleWheel]);
 
-  // Touch handlers for mobile
-  const getTouchDistance = useCallback((touch1: React.Touch, touch2: React.Touch) => {
-    const dx = touch1.clientX - touch2.clientX;
-    const dy = touch1.clientY - touch2.clientY;
-    return Math.sqrt(dx * dx + dy * dy);
-  }, []);
-
-  const getTouchCenter = useCallback((touch1: React.Touch, touch2: React.Touch) => {
-    return {
-      x: (touch1.clientX + touch2.clientX) / 2,
-      y: (touch1.clientY + touch2.clientY) / 2,
-    };
-  }, []);
-
-  const handleTouchStart = useCallback((e: React.TouchEvent) => {
-    // Clear hover on any touch interaction
-    hoveredTileRef.current = null;
-    setHoveredTile(null);
-    setHoveredIncident(null);
-
-    if (e.touches.length === 1) {
-      // Single touch - could be pan or tap
-      const touch = e.touches[0];
-      touchStartRef.current = { x: touch.clientX, y: touch.clientY, time: Date.now() };
-      setDragStart({ x: touch.clientX - offset.x, y: touch.clientY - offset.y });
-      setIsPanning(true);
-      isPinchZoomingRef.current = false;
-    } else if (e.touches.length === 2) {
-      // Two finger touch - pinch to zoom
-      const distance = getTouchDistance(e.touches[0], e.touches[1]);
-      initialPinchDistanceRef.current = distance;
-      initialZoomRef.current = zoom;
-      lastTouchCenterRef.current = getTouchCenter(e.touches[0], e.touches[1]);
-      setIsPanning(false);
-      isPinchZoomingRef.current = true;
-    }
-  }, [offset, zoom, getTouchDistance, getTouchCenter]);
-
-  const handleTouchMove = useCallback((e: React.TouchEvent) => {
-    e.preventDefault();
-
-    if (e.touches.length === 1 && isPanning && !initialPinchDistanceRef.current) {
-      // Single touch pan
-      const touch = e.touches[0];
-      const newOffset = {
-        x: touch.clientX - dragStart.x,
-        y: touch.clientY - dragStart.y,
-      };
-      setOffset(clampOffset(newOffset, zoom));
-    } else if (e.touches.length === 2 && initialPinchDistanceRef.current !== null) {
-      // Pinch to zoom
-      const currentDistance = getTouchDistance(e.touches[0], e.touches[1]);
-      const scale = currentDistance / initialPinchDistanceRef.current;
-      const newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, initialZoomRef.current * scale));
-
-      const currentCenter = getTouchCenter(e.touches[0], e.touches[1]);
-      const rect = containerRef.current?.getBoundingClientRect();
-      
-      if (rect && lastTouchCenterRef.current) {
-        // Calculate center position relative to canvas
-        const centerX = currentCenter.x - rect.left;
-        const centerY = currentCenter.y - rect.top;
-
-        // World position at pinch center
-        const worldX = (centerX - offset.x) / zoom;
-        const worldY = (centerY - offset.y) / zoom;
-
-        // Keep the same world position under the pinch center after zoom
-        const newOffsetX = centerX - worldX * newZoom;
-        const newOffsetY = centerY - worldY * newZoom;
-
-        // Also account for pan movement during pinch
-        const panDeltaX = currentCenter.x - lastTouchCenterRef.current.x;
-        const panDeltaY = currentCenter.y - lastTouchCenterRef.current.y;
-
-        const clampedOffset = clampOffset(
-          { x: newOffsetX + panDeltaX, y: newOffsetY + panDeltaY },
-          newZoom
-        );
-
-        setOffset(clampedOffset);
-        setZoom(newZoom);
-        lastTouchCenterRef.current = currentCenter;
+  const handleTouchStart = useCallback(
+    createTouchStartHandler(
+      { containerRef, gridSize, grid, canvasSize, selectedTool },
+      { offset, zoom, isPanning, dragStart },
+      {
+        setOffset,
+        setZoom,
+        setIsPanning,
+        setIsDragging,
+        setDragStart,
+        setHoveredTile,
+        setHoveredIncident,
+        setSelectedTile,
+        placeAtTile,
+        findBuildingOrigin,
+      },
+      {
+        hoveredTileRef,
+        touchStartRef,
+        initialPinchDistanceRef,
+        initialZoomRef,
+        lastTouchCenterRef,
+        isPinchZoomingRef,
       }
-    }
-  }, [isPanning, dragStart, zoom, offset, clampOffset, getTouchDistance, getTouchCenter]);
+    ),
+    [offset, zoom, containerRef, gridSize, grid, canvasSize, selectedTool, isPanning, dragStart, placeAtTile, findBuildingOrigin]
+  );
 
-  const handleTouchEnd = useCallback((e: React.TouchEvent) => {
-    const touchStart = touchStartRef.current;
-    
-    if (e.touches.length === 0) {
-      // All fingers lifted
-      if (touchStart && e.changedTouches.length === 1) {
-        const touch = e.changedTouches[0];
-        const deltaX = Math.abs(touch.clientX - touchStart.x);
-        const deltaY = Math.abs(touch.clientY - touchStart.y);
-        const deltaTime = Date.now() - touchStart.time;
-
-        // Detect tap (short duration, minimal movement)
-        if (deltaTime < 300 && deltaX < 10 && deltaY < 10) {
-          const rect = containerRef.current?.getBoundingClientRect();
-          if (rect) {
-            const mouseX = (touch.clientX - rect.left) / zoom;
-            const mouseY = (touch.clientY - rect.top) / zoom;
-            const { gridX, gridY } = screenToGrid(mouseX, mouseY, offset.x / zoom, offset.y / zoom);
-
-            if (gridX >= 0 && gridX < gridSize && gridY >= 0 && gridY < gridSize) {
-              if (selectedTool === 'select') {
-                const origin = findBuildingOrigin(gridX, gridY);
-                if (origin) {
-                  setSelectedTile({ x: origin.originX, y: origin.originY });
-                } else {
-                  setSelectedTile({ x: gridX, y: gridY });
-                }
-              } else {
-                placeAtTile(gridX, gridY);
-              }
-            }
-          }
-        }
+  const handleTouchMove = useCallback(
+    createTouchMoveHandler(
+      { containerRef, gridSize, grid, canvasSize, selectedTool },
+      { offset, zoom, isPanning, dragStart },
+      {
+        setOffset,
+        setZoom,
+        setIsPanning,
+        setIsDragging,
+        setDragStart,
+        setHoveredTile,
+        setHoveredIncident,
+        setSelectedTile,
+        placeAtTile,
+        findBuildingOrigin,
+      },
+      {
+        hoveredTileRef,
+        touchStartRef,
+        initialPinchDistanceRef,
+        initialZoomRef,
+        lastTouchCenterRef,
+        isPinchZoomingRef,
       }
+    ),
+    [isPanning, dragStart, zoom, offset, containerRef, gridSize, grid, canvasSize, selectedTool, placeAtTile, findBuildingOrigin]
+  );
 
-      // Reset all touch state
-      setIsPanning(false);
-      setIsDragging(false);
-      isPinchZoomingRef.current = false;
-      touchStartRef.current = null;
-      initialPinchDistanceRef.current = null;
-      lastTouchCenterRef.current = null;
-    } else if (e.touches.length === 1) {
-      // Went from 2 touches to 1 - reset to pan mode
-      const touch = e.touches[0];
-      setDragStart({ x: touch.clientX - offset.x, y: touch.clientY - offset.y });
-      setIsPanning(true);
-      isPinchZoomingRef.current = false;
-      initialPinchDistanceRef.current = null;
-      lastTouchCenterRef.current = null;
-    }
-  }, [zoom, offset, gridSize, selectedTool, placeAtTile, setSelectedTile, findBuildingOrigin]);
+  const handleTouchEnd = useCallback(
+    createTouchEndHandler(
+      { containerRef, gridSize, grid, canvasSize, selectedTool },
+      { offset, zoom, isPanning, dragStart },
+      {
+        setOffset,
+        setZoom,
+        setIsPanning,
+        setIsDragging,
+        setDragStart,
+        setHoveredTile,
+        setHoveredIncident,
+        setSelectedTile,
+        placeAtTile,
+        findBuildingOrigin,
+      },
+      {
+        hoveredTileRef,
+        touchStartRef,
+        initialPinchDistanceRef,
+        initialZoomRef,
+        lastTouchCenterRef,
+        isPinchZoomingRef,
+      }
+    ),
+    [zoom, offset, gridSize, selectedTool, placeAtTile, setSelectedTile, findBuildingOrigin, containerRef, grid, canvasSize, isPanning, dragStart]
+  );
   
   return (
     <div

@@ -14,11 +14,13 @@ import {
   Notification,
   AdjacentCity,
   WaterBody,
+} from '@/types/game';
+import {
   BUILDING_STATS,
   RESIDENTIAL_BUILDINGS,
   COMMERCIAL_BUILDINGS,
   INDUSTRIAL_BUILDINGS,
-} from '@/types/game';
+} from '@/data';
 import { generateCityName, generateWaterName } from './names';
 import { isMobile } from 'react-device-detect';
 

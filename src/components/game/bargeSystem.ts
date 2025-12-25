@@ -23,6 +23,7 @@ import {
   findAdjacentWaterTileForMarina,
   isOverWater,
 } from './gridFinders';
+import { normalizeAngle, distanceSquared } from '@/lib/utils/math';
 
 // ============================================================================
 // PERFORMANCE OPTIMIZATIONS:
@@ -131,22 +132,10 @@ interface CachedLocationData {
   gridVersion: number;
 }
 
-// Normalize angle to [-PI, PI] range efficiently
-function normalizeAngle(angle: number): number {
-  while (angle > Math.PI) angle -= TWO_PI;
-  while (angle < -Math.PI) angle += TWO_PI;
-  return angle;
-}
-
 // Fast hypot approximation for distance checks (when exact value not needed)
 function fastHypot(dx: number, dy: number): number {
   // For distance comparisons, we can use squared distance
   return Math.sqrt(dx * dx + dy * dy);
-}
-
-// Squared distance for comparisons (avoids sqrt)
-function distanceSquared(dx: number, dy: number): number {
-  return dx * dx + dy * dy;
 }
 
 export interface BargeSystemRefs {

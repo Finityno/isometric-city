@@ -7,7 +7,8 @@ import {
   useSetTool,
   useSetActivePanel,
 } from '@/store/selectors';
-import { Tool, TOOL_INFO } from '@/types/game';
+import { Tool } from '@/types/game';
+import { TOOL_INFO } from '@/data';
 import { useMobile } from '@/hooks/useMobile';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
