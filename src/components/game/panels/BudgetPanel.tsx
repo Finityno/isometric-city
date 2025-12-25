@@ -1,14 +1,23 @@
 'use client';
 
 import React from 'react';
-import { useGame } from '@/context/GameContext';
+import {
+  useBudget,
+  useIncome,
+  useExpenses,
+  useSetActivePanel,
+  useSetBudgetFunding,
+} from '@/store/selectors';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Slider } from '@/components/ui/slider';
 import { Label } from '@/components/ui/label';
 
 export function BudgetPanel() {
-  const { state, setActivePanel, setBudgetFunding } = useGame();
-  const { budget, stats } = state;
+  const budget = useBudget();
+  const income = useIncome();
+  const expenses = useExpenses();
+  const setActivePanel = useSetActivePanel();
+  const setBudgetFunding = useSetBudgetFunding();
   
   const categories = [
     { key: 'police', ...budget.police },
@@ -32,16 +41,16 @@ export function BudgetPanel() {
           <div className="grid grid-cols-3 gap-4 pb-4 border-b border-border">
             <div>
               <div className="text-muted-foreground text-xs mb-1">Income</div>
-              <div className="text-green-400 font-mono">${stats.income.toLocaleString()}/mo</div>
+              <div className="text-green-400 font-mono">${income.toLocaleString()}/mo</div>
             </div>
             <div>
               <div className="text-muted-foreground text-xs mb-1">Expenses</div>
-              <div className="text-red-400 font-mono">${stats.expenses.toLocaleString()}/mo</div>
+              <div className="text-red-400 font-mono">${expenses.toLocaleString()}/mo</div>
             </div>
             <div>
               <div className="text-muted-foreground text-xs mb-1">Net</div>
-              <div className={`font-mono ${stats.income - stats.expenses >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                ${(stats.income - stats.expenses).toLocaleString()}/mo
+              <div className={`font-mono ${income - expenses >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                ${(income - expenses).toLocaleString()}/mo
               </div>
             </div>
           </div>

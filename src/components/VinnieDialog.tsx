@@ -10,7 +10,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { useGame } from '@/context/GameContext';
+import { useAddMoney, useAddNotification } from '@/store/selectors';
 
 interface VinnieDialogProps {
   open: boolean;
@@ -18,7 +18,8 @@ interface VinnieDialogProps {
 }
 
 export function VinnieDialog({ open, onOpenChange }: VinnieDialogProps) {
-  const { addMoney, addNotification } = useGame();
+  const addMoney = useAddMoney();
+  const addNotification = useAddNotification();
 
   const handleAccept = () => {
     addMoney(100000);

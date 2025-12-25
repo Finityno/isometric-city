@@ -1,14 +1,19 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { useGame } from '@/context/GameContext';
+import {
+  useHistory,
+  useCityStats,
+  useSetActivePanel,
+} from '@/store/selectors';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Card } from '@/components/ui/card';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 export function StatisticsPanel() {
-  const { state, setActivePanel } = useGame();
-  const { history, stats } = state;
+  const history = useHistory();
+  const stats = useCityStats();
+  const setActivePanel = useSetActivePanel();
   const [activeTab, setActiveTab] = useState<'population' | 'money' | 'happiness'>('population');
   
   const canvasRef = useRef<HTMLCanvasElement>(null);

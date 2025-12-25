@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
-import { useGame } from '@/context/GameContext';
+import { useMiniMapData } from '@/store/selectors';
 import { Card } from '@/components/ui/card';
 import { TILE_WIDTH, TILE_HEIGHT } from '@/components/game/types';
 
@@ -32,8 +32,7 @@ interface MiniMapProps {
 
 // Canvas-based Minimap - Memoized with throttled grid rendering
 export const MiniMap = React.memo(function MiniMap({ onNavigate, viewport }: MiniMapProps) {
-  const { state } = useGame();
-  const { grid, gridSize, tick } = state;
+  const { grid, gridSize, tick } = useMiniMapData();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gridImageRef = useRef<ImageData | null>(null);
   const lastGridRenderTickRef = useRef(-1);

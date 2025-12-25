@@ -2,11 +2,22 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Button } from '@/components/ui/button';
-import { GameProvider } from '@/context/GameContext';
+import { useInitialize } from '@/store/selectors';
 import Game from '@/components/Game';
 import { useMobile } from '@/hooks/useMobile';
 import { getSpritePack, getSpriteCoords, DEFAULT_SPRITE_PACK_ID } from '@/lib/renderConfig';
 import { SavedCityMeta } from '@/types/game';
+
+// Component that initializes the store on mount
+function StoreInitializer({ children }: { children: React.ReactNode }) {
+  const initialize = useInitialize();
+
+  useEffect(() => {
+    initialize();
+  }, [initialize]);
+
+  return <>{children}</>;
+}
 
 const STORAGE_KEY = 'isocity-game-state';
 const SAVED_CITIES_INDEX_KEY = 'isocity-saved-cities-index';
@@ -280,11 +291,11 @@ export default function HomePage() {
 
   if (showGame) {
     return (
-      <GameProvider>
+      <StoreInitializer>
         <main className="h-screen w-screen overflow-hidden">
           <Game onExit={handleExitGame} />
         </main>
-      </GameProvider>
+      </StoreInitializer>
     );
   }
 

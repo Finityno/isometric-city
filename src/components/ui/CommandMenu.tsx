@@ -1,7 +1,12 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useGame } from '@/context/GameContext';
+import {
+  useMoney,
+  useActivePanel,
+  useSetTool,
+  useSetActivePanel,
+} from '@/store/selectors';
 import { Tool, TOOL_INFO } from '@/types/game';
 import { useMobile } from '@/hooks/useMobile';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
@@ -235,8 +240,10 @@ const ALL_MENU_ITEMS = buildMenuItems();
 
 export function CommandMenu() {
   const { isMobileDevice } = useMobile();
-  const { state, setTool, setActivePanel } = useGame();
-  const { stats } = state;
+  const money = useMoney();
+  const activePanel = useActivePanel();
+  const setTool = useSetTool();
+  const setActivePanel = useSetActivePanel();
 
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -331,10 +338,10 @@ export function CommandMenu() {
     if (item.type === 'tool' && item.tool) {
       setTool(item.tool);
     } else if (item.type === 'panel' && item.panel) {
-      setActivePanel(state.activePanel === item.panel ? 'none' : item.panel);
+      setActivePanel(activePanel === item.panel ? 'none' : item.panel);
     }
     setOpen(false);
-  }, [setTool, setActivePanel, state.activePanel]);
+  }, [setTool, setActivePanel, activePanel]);
 
   // Scroll selected item into view
   useEffect(() => {
@@ -426,7 +433,7 @@ export function CommandMenu() {
                       {items.map((item) => {
                         const globalIndex = flatItems.indexOf(item);
                         const isSelected = globalIndex === selectedIndex;
-                        const canAfford = item.cost === undefined || item.cost === 0 || stats.money >= item.cost;
+                        const canAfford = item.cost === undefined || item.cost === 0 || money >= item.cost;
 
                         return (
                           <button

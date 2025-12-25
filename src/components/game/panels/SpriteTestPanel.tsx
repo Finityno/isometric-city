@@ -1,13 +1,13 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { useGame } from '@/context/GameContext';
+import { useCurrentSpritePack } from '@/store/selectors';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { getSpriteCoords } from '@/lib/renderConfig';
 
 export function SpriteTestPanel({ onClose }: { onClose: () => void }) {
-  const { currentSpritePack } = useGame();
+  const currentSpritePack = useCurrentSpritePack();
   const [selectedTab, setSelectedTab] = useState<string>('main');
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [spriteSheets, setSpriteSheets] = useState<Record<string, HTMLImageElement | null>>({

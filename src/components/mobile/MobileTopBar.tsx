@@ -1,7 +1,15 @@
 'use client';
 
 import React, { useState, useCallback } from 'react';
-import { useGame } from '@/context/GameContext';
+import {
+  useTopBarData,
+  useVisualHour,
+  useCityStats,
+  useSetSpeed,
+  useSetTaxRate,
+  useIsSaving,
+  useSaveCity,
+} from '@/store/selectors';
 import { Tile } from '@/types/game';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -73,19 +81,35 @@ function DemandBar({ label, demand, color }: { label: string; demand: number; co
   );
 }
 
-export function MobileTopBar({ 
-  selectedTile, 
-  services, 
+export function MobileTopBar({
+  selectedTile,
+  services,
   onCloseTile,
   onExit,
-}: { 
+}: {
   selectedTile: Tile | null;
   services: { police: number[][]; fire: number[][]; health: number[][]; education: number[][]; power: boolean[][]; water: boolean[][] };
   onCloseTile: () => void;
   onExit?: () => void;
 }) {
-  const { state, setSpeed, setTaxRate, isSaving, visualHour, saveCity } = useGame();
-  const { stats, year, month, speed, taxRate, cityName } = state;
+  const {
+    cityName,
+    year,
+    month,
+    speed,
+    taxRate,
+    population,
+    jobs,
+    money,
+    income,
+    expenses,
+    demand,
+  } = useTopBarData();
+  const stats = useCityStats();
+  const isSaving = useIsSaving();
+  const setSpeed = useSetSpeed();
+  const setTaxRate = useSetTaxRate();
+  const saveCity = useSaveCity();
   const [showDetails, setShowDetails] = useState(false);
   const [showExitDialog, setShowExitDialog] = useState(false);
   const [showTaxSlider, setShowTaxSlider] = useState(false);
@@ -128,13 +152,13 @@ export function MobileTopBar({
             </div>
             <div className="flex flex-col items-start">
               <span className="text-xs font-mono font-semibold text-foreground">
-                {stats.population >= 1000 ? `${(stats.population / 1000).toFixed(1)}k` : stats.population}
+                {population >= 1000 ? `${(population / 1000).toFixed(1)}k` : population}
               </span>
               <span className="text-[9px] text-muted-foreground">Pop</span>
             </div>
             <div className="flex flex-col items-start">
-              <span className={`text-xs font-mono font-semibold ${stats.money < 0 ? 'text-red-500' : stats.money < 1000 ? 'text-amber-500' : 'text-green-500'}`}>
-                ${stats.money >= 1000000 ? `${(stats.money / 1000000).toFixed(1)}M` : stats.money >= 1000 ? `${(stats.money / 1000).toFixed(0)}k` : stats.money}
+              <span className={`text-xs font-mono font-semibold ${money < 0 ? 'text-red-500' : money < 1000 ? 'text-amber-500' : 'text-green-500'}`}>
+                ${money >= 1000000 ? `${(money / 1000000).toFixed(1)}M` : money >= 1000 ? `${(money / 1000).toFixed(0)}k` : money}
               </span>
               <span className="text-[9px] text-muted-foreground">Funds</span>
             </div>
@@ -212,9 +236,9 @@ export function MobileTopBar({
         {/* Demand indicators row */}
         <div className="flex items-center justify-between px-3 py-1 border-t border-sidebar-border/50 bg-secondary/30">
           <div className="flex items-center gap-3">
-            <DemandBar label="R" demand={stats.demand.residential} color="text-green-500" />
-            <DemandBar label="C" demand={stats.demand.commercial} color="text-blue-500" />
-            <DemandBar label="I" demand={stats.demand.industrial} color="text-amber-500" />
+            <DemandBar label="R" demand={demand.residential} color="text-green-500" />
+            <DemandBar label="C" demand={demand.commercial} color="text-blue-500" />
+            <DemandBar label="I" demand={demand.industrial} color="text-amber-500" />
           </div>
 
           <button
@@ -232,8 +256,8 @@ export function MobileTopBar({
           </button>
 
           <div className="flex items-center gap-1">
-            <span className={`text-[10px] font-mono ${stats.income - stats.expenses >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-              {stats.income - stats.expenses >= 0 ? '+' : ''}${(stats.income - stats.expenses).toLocaleString()}/mo
+            <span className={`text-[10px] font-mono ${income - expenses >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+              {income - expenses >= 0 ? '+' : ''}${(income - expenses).toLocaleString()}/mo
             </span>
           </div>
         </div>

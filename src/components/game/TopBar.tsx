@@ -1,7 +1,13 @@
 'use client';
 
 import React, { useState } from 'react';
-import { useGame } from '@/context/GameContext';
+import {
+  useTopBarData,
+  useVisualHour,
+  useQualityOfLife,
+  useSetSpeed,
+  useSetTaxRate,
+} from '@/store/selectors';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -136,8 +142,7 @@ export function MiniStat({ icon, label, value }: MiniStatProps) {
 // ============================================================================
 
 export const StatsPanel = React.memo(function StatsPanel() {
-  const { state } = useGame();
-  const { stats } = state;
+  const stats = useQualityOfLife();
   
   return (
     <div className="h-8 bg-secondary/50 border-b border-border flex items-center justify-center gap-8 text-xs">
@@ -155,8 +160,24 @@ export const StatsPanel = React.memo(function StatsPanel() {
 // ============================================================================
 
 export const TopBar = React.memo(function TopBar() {
-  const { state, setSpeed, setTaxRate, isSaving, visualHour } = useGame();
-  const { stats, year, month, day, speed, taxRate, cityName } = state;
+  const {
+    cityName,
+    year,
+    month,
+    day,
+    speed,
+    taxRate,
+    isSaving,
+    population,
+    jobs,
+    money,
+    income,
+    expenses,
+    demand,
+  } = useTopBarData();
+  const visualHour = useVisualHour();
+  const setSpeed = useSetSpeed();
+  const setTaxRate = useSetTaxRate();
   
   const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const formattedDate = `${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}-${year}`;
@@ -213,26 +234,26 @@ export const TopBar = React.memo(function TopBar() {
       </div>
       
       <div className="flex items-center gap-8">
-        <StatBadge value={stats.population.toLocaleString()} label="Population" />
-        <StatBadge value={stats.jobs.toLocaleString()} label="Jobs" />
-        <StatBadge 
-          value={`$${stats.money.toLocaleString()}`} 
+        <StatBadge value={population.toLocaleString()} label="Population" />
+        <StatBadge value={jobs.toLocaleString()} label="Jobs" />
+        <StatBadge
+          value={`$${money.toLocaleString()}`}
           label="Funds"
-          variant={stats.money < 0 ? 'destructive' : stats.money < 1000 ? 'warning' : 'success'}
+          variant={money < 0 ? 'destructive' : money < 1000 ? 'warning' : 'success'}
         />
         <Separator orientation="vertical" className="h-8" />
-        <StatBadge 
-          value={`$${(stats.income - stats.expenses).toLocaleString()}`} 
+        <StatBadge
+          value={`$${(income - expenses).toLocaleString()}`}
           label="Monthly"
-          variant={stats.income - stats.expenses >= 0 ? 'success' : 'destructive'}
+          variant={income - expenses >= 0 ? 'success' : 'destructive'}
         />
       </div>
       
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-2">
-          <DemandIndicator label="R" demand={stats.demand.residential} color="text-green-500" />
-          <DemandIndicator label="C" demand={stats.demand.commercial} color="text-blue-500" />
-          <DemandIndicator label="I" demand={stats.demand.industrial} color="text-amber-500" />
+          <DemandIndicator label="R" demand={demand.residential} color="text-green-500" />
+          <DemandIndicator label="C" demand={demand.commercial} color="text-blue-500" />
+          <DemandIndicator label="I" demand={demand.industrial} color="text-amber-500" />
         </div>
         
         <Separator orientation="vertical" className="h-8" />

@@ -1,7 +1,12 @@
 'use client';
 
 import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
-import { useGame } from '@/context/GameContext';
+import {
+  useSidebarData,
+  useSetTool,
+  useSetActivePanel,
+  useSaveCity,
+} from '@/store/selectors';
 import { Tool, TOOL_INFO } from '@/types/game';
 import {
   BudgetIcon,
@@ -269,8 +274,10 @@ function ExitDialog({
 
 // Memoized Sidebar Component
 export const Sidebar = React.memo(function Sidebar({ onExit }: { onExit?: () => void }) {
-  const { state, setTool, setActivePanel, saveCity } = useGame();
-  const { selectedTool, stats, activePanel } = state;
+  const { selectedTool, money, activePanel } = useSidebarData();
+  const setTool = useSetTool();
+  const setActivePanel = useSetActivePanel();
+  const saveCity = useSaveCity();
   const [showExitDialog, setShowExitDialog] = useState(false);
   
   const handleSaveAndExit = useCallback(() => {
@@ -392,7 +399,7 @@ export const Sidebar = React.memo(function Sidebar({ onExit }: { onExit?: () => 
                 const info = TOOL_INFO[tool];
                 if (!info) return null;
                 const isSelected = selectedTool === tool;
-                const canAfford = stats.money >= info.cost;
+                const canAfford = money >= info.cost;
                 
                 return (
                   <Button
@@ -432,7 +439,7 @@ export const Sidebar = React.memo(function Sidebar({ onExit }: { onExit?: () => 
               label={label}
               tools={tools}
               selectedTool={selectedTool}
-              money={stats.money}
+              money={money}
               onSelectTool={setTool}
               forceOpenUpward={forceOpenUpward}
             />

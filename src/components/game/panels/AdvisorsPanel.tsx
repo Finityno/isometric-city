@@ -1,7 +1,11 @@
 'use client';
 
 import React from 'react';
-import { useGame } from '@/context/GameContext';
+import {
+  useAdvisorMessages,
+  useQualityOfLife,
+  useSetActivePanel,
+} from '@/store/selectors';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -32,8 +36,9 @@ const ADVISOR_ICON_MAP: Record<string, React.ReactNode> = {
 };
 
 export function AdvisorsPanel() {
-  const { state, setActivePanel } = useGame();
-  const { advisorMessages, stats } = state;
+  const advisorMessages = useAdvisorMessages();
+  const stats = useQualityOfLife();
+  const setActivePanel = useSetActivePanel();
   
   const avgRating = (stats.happiness + stats.health + stats.education + stats.safety + stats.environment) / 5;
   const grade = avgRating >= 90 ? 'A+' : avgRating >= 80 ? 'A' : avgRating >= 70 ? 'B' : avgRating >= 60 ? 'C' : avgRating >= 50 ? 'D' : 'F';

@@ -1,7 +1,17 @@
 'use client';
 
 import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
-import { useGame } from '@/context/GameContext';
+import {
+  useCanvasData,
+  useSpeed,
+  useAdjacentCities,
+  useWaterBodies,
+  useCurrentSpritePack,
+  useVisualHour,
+  usePlaceAtTile,
+  useGameActions,
+  useCityStats,
+} from '@/store/selectors';
 import { TOOL_INFO, Tile, BuildingType, AdjacentCity } from '@/types/game';
 import { getBuildingSize, requiresWaterAdjacency, getWaterAdjacency, getRoadAdjacency } from '@/lib/simulation';
 import { FireIcon, SafetyIcon } from '@/components/ui/Icons';
@@ -123,8 +133,15 @@ export interface CanvasIsometricGridProps {
 
 // Canvas-based Isometric Grid - HIGH PERFORMANCE
 export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile, isMobile = false, navigationTarget, onNavigationComplete, onViewportChange, onBargeDelivery }: CanvasIsometricGridProps) {
-  const { state, placeAtTile, connectToCity, checkAndDiscoverCities, currentSpritePack, visualHour } = useGame();
-  const { grid, gridSize, selectedTool, speed, adjacentCities, waterBodies, gameVersion } = state;
+  const { grid, gridSize, selectedTool, services, gameVersion } = useCanvasData();
+  const speed = useSpeed();
+  const adjacentCities = useAdjacentCities();
+  const waterBodies = useWaterBodies();
+  const currentSpritePack = useCurrentSpritePack();
+  const visualHour = useVisualHour();
+  const placeAtTile = usePlaceAtTile();
+  const { connectToCity, checkAndDiscoverCities } = useGameActions();
+  const stats = useCityStats();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hoverCanvasRef = useRef<HTMLCanvasElement>(null); // PERF: Separate canvas for hover/selection highlights
   const carsCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -310,8 +327,8 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     gridVersionRef,
     cachedRoadTileCountRef,
     state: {
-      services: state.services,
-      stats: state.stats,
+      services: services,
+      stats: stats,
     },
     isMobile,
   };
@@ -2902,10 +2919,10 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
           const { tile, screenX, screenY } = overlayQueue[i];
           // Get service coverage for this tile
           const coverage = {
-            fire: state.services.fire[tile.y][tile.x],
-            police: state.services.police[tile.y][tile.x],
-            health: state.services.health[tile.y][tile.x],
-            education: state.services.education[tile.y][tile.x],
+            fire: services.fire[tile.y][tile.x],
+            police: services.police[tile.y][tile.x],
+            health: services.health[tile.y][tile.x],
+            education: services.education[tile.y][tile.x],
           };
           
           const fillStyle = getOverlayFillStyle(overlayMode, tile, coverage);
@@ -3042,7 +3059,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
       }
     };
   // PERF: hoveredTile and selectedTile removed from deps - now rendered on separate hover canvas layer
-  }, [grid, gridSize, offset, zoom, overlayMode, imagesLoaded, imageLoadVersion, canvasSize, dragStartTile, dragEndTile, state.services, currentSpritePack, waterBodies, getTileMetadata, showsDragGrid, isMobile]);
+  }, [grid, gridSize, offset, zoom, overlayMode, imagesLoaded, imageLoadVersion, canvasSize, dragStartTile, dragEndTile, services, currentSpritePack, waterBodies, getTileMetadata, showsDragGrid, isMobile]);
   
   // PERF: Ref-based hover canvas drawing function - avoids React re-render overhead
   // This is called directly from mouse move handler via requestAnimationFrame
@@ -4138,7 +4155,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
       {selectedTile && selectedTool === 'select' && !isMobile && (
         <TileInfoPanel
           tile={grid[selectedTile.y][selectedTile.x]}
-          services={state.services}
+          services={services}
           onClose={() => setSelectedTile(null)}
         />
       )}

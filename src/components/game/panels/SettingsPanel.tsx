@@ -3,7 +3,29 @@
 import React, { useState, useRef, useEffect } from 'react';
 import Image from 'next/image';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { useGame, DayNightMode } from '@/context/GameContext';
+import {
+  useCityName,
+  useCityId,
+  useGridSize,
+  useDisastersEnabled,
+  useCurrentSpritePack,
+  useAvailableSpritePacks,
+  useDayNightMode,
+  useSavedCities,
+  useSetActivePanel,
+  useSetDisastersEnabled,
+  useSetSpritePack,
+  useSetDayNightMode,
+  useNewGame,
+  useLoadState,
+  useExportState,
+  useSaveCity,
+  useLoadSavedCity,
+  useDeleteSavedCity,
+  useRenameSavedCity,
+  useGameActions,
+} from '@/store/selectors';
+import { DayNightMode } from '@/store/gameStore';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -40,8 +62,26 @@ function formatMoney(money: number): string {
 }
 
 export function SettingsPanel() {
-  const { state, setActivePanel, setDisastersEnabled, newGame, loadState, exportState, currentSpritePack, availableSpritePacks, setSpritePack, dayNightMode, setDayNightMode, getSavedCityInfo, restoreSavedCity, clearSavedCity, savedCities, saveCity, loadSavedCity, deleteSavedCity, renameSavedCity } = useGame();
-  const { disastersEnabled, cityName, gridSize, id: currentCityId } = state;
+  const cityName = useCityName();
+  const currentCityId = useCityId();
+  const gridSize = useGridSize();
+  const disastersEnabled = useDisastersEnabled();
+  const currentSpritePack = useCurrentSpritePack();
+  const availableSpritePacks = useAvailableSpritePacks();
+  const dayNightMode = useDayNightMode();
+  const savedCities = useSavedCities();
+  const setActivePanel = useSetActivePanel();
+  const setDisastersEnabled = useSetDisastersEnabled();
+  const setSpritePack = useSetSpritePack();
+  const setDayNightMode = useSetDayNightMode();
+  const newGame = useNewGame();
+  const loadState = useLoadState();
+  const exportState = useExportState();
+  const saveCity = useSaveCity();
+  const loadSavedCity = useLoadSavedCity();
+  const deleteSavedCity = useDeleteSavedCity();
+  const renameSavedCity = useRenameSavedCity();
+  const { getSavedCityInfo, restoreSavedCity, clearSavedCity } = useGameActions();
   const searchParams = useSearchParams();
   const router = useRouter();
   const [newCityName, setNewCityName] = useState(cityName);

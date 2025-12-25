@@ -1,7 +1,18 @@
 'use client';
 
 import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
-import { useGame } from '@/context/GameContext';
+import {
+  useSelectedTool,
+  useActivePanel,
+  useSpeed,
+  useGrid,
+  useServices,
+  useSetTool,
+  useSetActivePanel,
+  useSetSpeed,
+  useAddMoney,
+  useAddNotification,
+} from '@/store/selectors';
 import { Tool } from '@/types/game';
 import { useMobile } from '@/hooks/useMobile';
 import { MobileToolbar } from '@/components/mobile/MobileToolbar';
@@ -32,7 +43,17 @@ import { CanvasIsometricGrid } from '@/components/game/CanvasIsometricGrid';
 const CARGO_TYPE_NAMES = ['containers', 'bulk materials', 'oil'];
 
 export default function Game({ onExit }: { onExit?: () => void }) {
-  const { state, setTool, setActivePanel, addMoney, addNotification, setSpeed } = useGame();
+  const selectedTool = useSelectedTool();
+  const activePanel = useActivePanel();
+  const speed = useSpeed();
+  const grid = useGrid();
+  const services = useServices();
+  const setTool = useSetTool();
+  const setActivePanel = useSetActivePanel();
+  const setSpeed = useSetSpeed();
+  const addMoney = useAddMoney();
+  const addNotification = useAddNotification();
+
   const [overlayMode, setOverlayMode] = useState<OverlayMode>('none');
   const [selectedTile, setSelectedTile] = useState<{ x: number; y: number } | null>(null);
   const [navigationTarget, setNavigationTarget] = useState<{ x: number; y: number } | null>(null);
@@ -40,7 +61,7 @@ export default function Game({ onExit }: { onExit?: () => void }) {
   const isInitialMount = useRef(true);
   const { isMobileDevice, isSmallScreen } = useMobile();
   const isMobile = isMobileDevice || isSmallScreen;
-  
+
   // Cheat code system
   const {
     triggeredCheat,
@@ -51,12 +72,12 @@ export default function Game({ onExit }: { onExit?: () => void }) {
   const initialSelectedToolRef = useRef<Tool | null>(null);
   const previousSelectedToolRef = useRef<Tool | null>(null);
   const hasCapturedInitialTool = useRef(false);
-  const currentSelectedToolRef = useRef<Tool>(state.selectedTool);
+  const currentSelectedToolRef = useRef<Tool>(selectedTool);
   
   // Keep currentSelectedToolRef in sync with state
   useEffect(() => {
-    currentSelectedToolRef.current = state.selectedTool;
-  }, [state.selectedTool]);
+    currentSelectedToolRef.current = selectedTool;
+  }, [selectedTool]);
   
   // Track the initial selectedTool after localStorage loads (with a small delay to allow state to load)
   useEffect(() => {
@@ -79,20 +100,20 @@ export default function Game({ onExit }: { onExit?: () => void }) {
     }
     
     // Select tool always resets overlay to none (user is explicitly switching to select)
-    if (state.selectedTool === 'select') {
+    if (selectedTool === 'select') {
       setTimeout(() => {
         setOverlayMode('none');
       }, 0);
-      previousSelectedToolRef.current = state.selectedTool;
+      previousSelectedToolRef.current = selectedTool;
       return;
     }
     
     // Subway tool sets overlay when actively selected (not on page load)
-    if (state.selectedTool === 'subway' || state.selectedTool === 'subway_station') {
+    if (selectedTool === 'subway' || selectedTool === 'subway_station') {
       setTimeout(() => {
         setOverlayMode('subway');
       }, 0);
-      previousSelectedToolRef.current = state.selectedTool;
+      previousSelectedToolRef.current = selectedTool;
       return;
     }
     
@@ -103,22 +124,22 @@ export default function Game({ onExit }: { onExit?: () => void }) {
     
     // Don't auto-set overlay if this matches the initial tool from localStorage
     if (initialSelectedToolRef.current !== null && 
-        initialSelectedToolRef.current === state.selectedTool) {
+        initialSelectedToolRef.current === selectedTool) {
       return;
     }
     
     // Don't auto-set overlay if tool hasn't changed
-    if (previousSelectedToolRef.current === state.selectedTool) {
+    if (previousSelectedToolRef.current === selectedTool) {
       return;
     }
     
     // Update previous tool reference
-    previousSelectedToolRef.current = state.selectedTool;
+    previousSelectedToolRef.current = selectedTool;
     
     setTimeout(() => {
-      setOverlayMode(getOverlayForTool(state.selectedTool));
+      setOverlayMode(getOverlayForTool(selectedTool));
     }, 0);
-  }, [state.selectedTool]);
+  }, [selectedTool]);
   
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -131,11 +152,11 @@ export default function Game({ onExit }: { onExit?: () => void }) {
       if (e.key === 'Escape') {
         if (overlayMode !== 'none') {
           setOverlayMode('none');
-        } else if (state.activePanel !== 'none') {
+        } else if (activePanel !== 'none') {
           setActivePanel('none');
         } else if (selectedTile) {
           setSelectedTile(null);
-        } else if (state.selectedTool !== 'select') {
+        } else if (selectedTool !== 'select') {
           setTool('select');
         }
       } else if (e.key === 'b' || e.key === 'B') {
@@ -145,13 +166,13 @@ export default function Game({ onExit }: { onExit?: () => void }) {
         e.preventDefault();
         // Toggle pause/unpause: if paused (speed 0), resume to normal (speed 1)
         // If running, pause (speed 0)
-        setSpeed(state.speed === 0 ? 1 : 0);
+        setSpeed(speed === 0 ? 1 : 0);
       }
     };
     
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [state.activePanel, state.selectedTool, state.speed, selectedTile, setActivePanel, setTool, setSpeed, overlayMode]);
+  }, [activePanel, selectedTool, speed, selectedTile, setActivePanel, setTool, setSpeed, overlayMode]);
 
   // Handle cheat code triggers
   useEffect(() => {
@@ -211,8 +232,8 @@ export default function Game({ onExit }: { onExit?: () => void }) {
         <div className="w-full h-full overflow-hidden bg-background flex flex-col">
           {/* Mobile Top Bar */}
           <MobileTopBar 
-            selectedTile={selectedTile && state.selectedTool === 'select' ? state.grid[selectedTile.y][selectedTile.x] : null}
-            services={state.services}
+            selectedTile={selectedTile && selectedTool === 'select' ? grid[selectedTile.y][selectedTile.x] : null}
+            services={services}
             onCloseTile={() => setSelectedTile(null)}
             onExit={onExit}
           />
@@ -236,10 +257,10 @@ export default function Game({ onExit }: { onExit?: () => void }) {
           />
           
           {/* Panels - render as fullscreen modals on mobile */}
-          {state.activePanel === 'budget' && <BudgetPanel />}
-          {state.activePanel === 'statistics' && <StatisticsPanel />}
-          {state.activePanel === 'advisors' && <AdvisorsPanel />}
-          {state.activePanel === 'settings' && <SettingsPanel />}
+          {activePanel === 'budget' && <BudgetPanel />}
+          {activePanel === 'statistics' && <StatisticsPanel />}
+          {activePanel === 'advisors' && <AdvisorsPanel />}
+          {activePanel === 'settings' && <SettingsPanel />}
           
           <VinnieDialog open={showVinnieDialog} onOpenChange={setShowVinnieDialog} />
         </div>
@@ -271,10 +292,10 @@ export default function Game({ onExit }: { onExit?: () => void }) {
           </div>
         </div>
         
-        {state.activePanel === 'budget' && <BudgetPanel />}
-        {state.activePanel === 'statistics' && <StatisticsPanel />}
-        {state.activePanel === 'advisors' && <AdvisorsPanel />}
-        {state.activePanel === 'settings' && <SettingsPanel />}
+        {activePanel === 'budget' && <BudgetPanel />}
+        {activePanel === 'statistics' && <StatisticsPanel />}
+        {activePanel === 'advisors' && <AdvisorsPanel />}
+        {activePanel === 'settings' && <SettingsPanel />}
         
         <VinnieDialog open={showVinnieDialog} onOpenChange={setShowVinnieDialog} />
         <CommandMenu />

@@ -1,7 +1,11 @@
 'use client';
 
 import React, { useState } from 'react';
-import { useGame } from '@/context/GameContext';
+import {
+  useSelectedTool,
+  useMoney,
+  useSetTool,
+} from '@/store/selectors';
 import { Tool, TOOL_INFO } from '@/types/game';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -211,8 +215,9 @@ interface MobileToolbarProps {
 }
 
 export function MobileToolbar({ onOpenPanel, overlayMode = 'none', setOverlayMode }: MobileToolbarProps) {
-  const { state, setTool } = useGame();
-  const { selectedTool, stats } = state;
+  const selectedTool = useSelectedTool();
+  const money = useMoney();
+  const setTool = useSetTool();
   const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
   const [showMenu, setShowMenu] = useState(false);
 
@@ -249,7 +254,7 @@ export function MobileToolbar({ onOpenPanel, overlayMode = 'none', setOverlayMod
                 {TOOL_INFO[selectedTool].name}
               </span>
               {TOOL_INFO[selectedTool].cost > 0 && (
-                <span className={`font-mono ${stats.money >= TOOL_INFO[selectedTool].cost ? 'text-green-400' : 'text-red-400'}`}>
+                <span className={`font-mono ${money >= TOOL_INFO[selectedTool].cost ? 'text-green-400' : 'text-red-400'}`}>
                   ${TOOL_INFO[selectedTool].cost}
                 </span>
               )}
@@ -494,7 +499,7 @@ export function MobileToolbar({ onOpenPanel, overlayMode = 'none', setOverlayMod
                         {tools.map((tool) => {
                           const info = TOOL_INFO[tool];
                           if (!info) return null;
-                          const canAfford = stats.money >= info.cost;
+                          const canAfford = money >= info.cost;
 
                           return (
                             <Button
