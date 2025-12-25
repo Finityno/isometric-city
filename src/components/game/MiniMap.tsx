@@ -46,7 +46,8 @@ export const MiniMap = React.memo(function MiniMap({ onNavigate, viewport }: Min
     const canvas = canvasRef.current;
     if (!canvas) return;
     
-    const ctx = canvas.getContext('2d');
+    // PERF: willReadFrequently=true optimizes for getImageData calls
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return;
     
     const size = 140;

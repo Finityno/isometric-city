@@ -345,6 +345,24 @@ export function gridToScreen(x: number, y: number, offsetX: number, offsetY: num
   return { screenX, screenY };
 }
 
+// PERF: Reusable output object for hot paths (avoids GC pressure)
+const _screenCoords = { screenX: 0, screenY: 0 };
+
+/**
+ * Convert grid coordinates to screen coordinates (isometric) - zero allocation version
+ * Uses a shared output object to avoid creating garbage. NOT safe for storing results.
+ * @param x Grid X coordinate
+ * @param y Grid Y coordinate
+ * @param offsetX Screen offset X
+ * @param offsetY Screen offset Y
+ * @returns Shared object with screenX/screenY (reused on each call!)
+ */
+export function gridToScreenReuse(x: number, y: number, offsetX: number, offsetY: number): { screenX: number; screenY: number } {
+  _screenCoords.screenX = (x - y) * (TILE_WIDTH / 2) + offsetX;
+  _screenCoords.screenY = (x + y) * (TILE_HEIGHT / 2) + offsetY;
+  return _screenCoords;
+}
+
 // Convert screen coordinates to grid coordinates
 export function screenToGrid(screenX: number, screenY: number, offsetX: number, offsetY: number): { gridX: number; gridY: number } {
   // Adjust for the fact that tile centers are offset by half a tile from gridToScreen coordinates

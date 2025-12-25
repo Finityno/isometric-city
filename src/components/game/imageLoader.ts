@@ -62,12 +62,6 @@ export function loadImage(src: string): Promise<HTMLImageElement> {
 export function filterBackgroundColor(img: HTMLImageElement, threshold: number = COLOR_THRESHOLD): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     try {
-      console.log('Starting background color filtering...', { 
-        imageSize: `${img.naturalWidth || img.width}x${img.naturalHeight || img.height}`,
-        threshold,
-        backgroundColor: BACKGROUND_COLOR
-      });
-      
       const canvas = document.createElement('canvas');
       canvas.width = img.naturalWidth || img.width;
       canvas.height = img.naturalHeight || img.height;
@@ -84,46 +78,38 @@ export function filterBackgroundColor(img: HTMLImageElement, threshold: number =
       // Get image data
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const data = imageData.data;
-      
-      console.log(`Processing ${data.length / 4} pixels...`);
-      
+
+      // Pre-compute squared threshold to avoid Math.sqrt in the loop
+      // Instead of: sqrt(a² + b² + c²) <= threshold
+      // We use:     a² + b² + c² <= threshold²
+      const thresholdSquared = threshold * threshold;
+
       // Process each pixel
-      let filteredCount = 0;
       for (let i = 0; i < data.length; i += 4) {
-        const r = data[i];
-        const g = data[i + 1];
-        const b = data[i + 2];
-        
-        // Calculate color distance using Euclidean distance in RGB space
-        const distance = Math.sqrt(
-          Math.pow(r - BACKGROUND_COLOR.r, 2) +
-          Math.pow(g - BACKGROUND_COLOR.g, 2) +
-          Math.pow(b - BACKGROUND_COLOR.b, 2)
-        );
-        
+        // Calculate color difference from background
+        const dr = data[i] - BACKGROUND_COLOR.r;
+        const dg = data[i + 1] - BACKGROUND_COLOR.g;
+        const db = data[i + 2] - BACKGROUND_COLOR.b;
+
+        // Compare squared distances (no sqrt needed!)
+        // Using x * x instead of Math.pow(x, 2) for better performance
+        const distanceSquared = dr * dr + dg * dg + db * db;
+
         // If the color is close to the background color, make it transparent
-        if (distance <= threshold) {
+        if (distanceSquared <= thresholdSquared) {
           data[i + 3] = 0; // Set alpha to 0 (transparent)
-          filteredCount++;
         }
       }
-      
-      // Debug: log filtering results
-      const totalPixels = data.length / 4;
-      const percentage = filteredCount > 0 ? ((filteredCount / totalPixels) * 100).toFixed(2) : '0.00';
-      console.log(`Filtered ${filteredCount} pixels (${percentage}%) from sprite sheet`);
-      
+
       // Put the modified image data back
       ctx.putImageData(imageData, 0, 0);
       
       // Create a new image from the processed canvas
       const filteredImg = new Image();
       filteredImg.onload = () => {
-        console.log('Filtered image created successfully');
         resolve(filteredImg);
       };
-      filteredImg.onerror = (error) => {
-        console.error('Failed to create filtered image:', error);
+      filteredImg.onerror = () => {
         reject(new Error('Failed to create filtered image'));
       };
       filteredImg.src = canvas.toDataURL();

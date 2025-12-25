@@ -119,6 +119,12 @@ import {
 } from '@/components/game/trainSystem';
 import { Train } from '@/components/game/types';
 
+// PERF: Static sets for lighting calculations (moved to module level to avoid recreation)
+const nonLitTypes = new Set(['grass', 'empty', 'water', 'road', 'tree', 'park', 'park_large', 'tennis']);
+const specialTypes = new Set(['hospital', 'fire_station', 'police_station', 'power_plant']);
+const residentialTypes = new Set(['house_small', 'house_medium', 'mansion', 'apartment_low', 'apartment_high']);
+const commercialTypes = new Set(['shop_small', 'shop_medium', 'office_low', 'office_high', 'mall']);
+
 // Props interface for CanvasIsometricGrid
 export interface CanvasIsometricGridProps {
   overlayMode: OverlayMode;
@@ -3325,8 +3331,6 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     if (lightingCacheRef.current.gridVersion === currentVersion) return;
 
     // Rebuild the light cache from scratch
-    const nonLitTypes = new Set(['grass', 'empty', 'water', 'road', 'tree', 'park', 'park_large', 'tennis']);
-    const specialTypes = new Set(['hospital', 'fire_station', 'police_station', 'power_plant']);
     const lights: typeof lightingCacheRef.current.lights = [];
 
     // Iterate through ENTIRE grid to cache ALL potential light sources
@@ -3438,9 +3442,6 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
       const s = Math.sin(seed + n * 12.9898) * 43758.5453;
       return s - Math.floor(s);
     };
-
-    const residentialTypes = new Set(['house_small', 'house_medium', 'mansion', 'apartment_low', 'apartment_high']);
-    const commercialTypes = new Set(['shop_small', 'shop_medium', 'office_low', 'office_high', 'mall']);
 
     // Get cached lights and filter by viewport
     const cachedLights = lightingCacheRef.current.lights;
