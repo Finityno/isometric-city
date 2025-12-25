@@ -2,7 +2,7 @@ import React from 'react';
 import { Tile, Tool } from '@/types/game';
 import { screenToGrid } from '@/components/game/utils';
 import { clampOffset } from './ViewportController';
-import { CrimeType } from '@/components/game/incidentData';
+import { CrimeType } from '@/components/game/incidents';
 
 const PAN_DRAG_THRESHOLD = 6;
 

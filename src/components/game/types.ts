@@ -17,28 +17,22 @@ export const KEY_PAN_SPEED = 520 as const;
 // Shared Base Interfaces
 // ============================================================================
 
-/** Base interface for entities with screen position */
-interface ScreenPositioned {
-  readonly x: number;
-  readonly y: number;
-}
-
-/** Base interface for entities with tile position */
+/** Base interface for entities positioned on the tile grid */
 interface TilePositioned {
   tileX: number;
   tileY: number;
 }
 
-/** Base interface for entities with lifecycle tracking */
+/** Base interface for entities that move with progress-based interpolation */
+interface Moveable {
+  progress: number;
+  speed: number;
+}
+
+/** Base interface for entities with a lifecycle (age tracking) */
 interface Lifecycle {
   age: number;
   maxAge: number;
-}
-
-/** Base interface for entities with movement */
-interface Moveable {
-  speed: number;
-  progress: number;
 }
 
 /** Base interface for particle effects (mutable for object pooling) */
@@ -61,9 +55,6 @@ interface HasParticleTrail<T extends BaseParticle> {
 
 /** Cardinal directions for vehicle/entity movement */
 export type CarDirection = 'north' | 'east' | 'south' | 'west';
-
-/** Map edge directions */
-export type EdgeDirection = CarDirection;
 
 // ============================================================================
 // Car/Vehicle Types

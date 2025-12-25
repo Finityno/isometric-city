@@ -98,7 +98,7 @@ import { useAircraftSystems, AircraftSystemRefs, AircraftSystemState } from '@/c
 import { useBargeSystem, BargeSystemRefs, BargeSystemState } from '@/components/game/systems/marine';
 import { useBoatSystem, BoatSystemRefs, BoatSystemState } from '@/components/game/systems/marine';
 import { useSeaplaneSystem, SeaplaneSystemRefs, SeaplaneSystemState } from '@/components/game/systems/marine';
-import { useEffectsSystems, EffectsSystemRefs, EffectsSystemState } from '@/components/game/effects';
+import { useEffectsSystems, EffectsSystemRefs, EffectsSystemState } from '@/components/game/effectsSystems';
 import {
   analyzeMergedRoad,
   getTrafficLightState,
@@ -108,7 +108,7 @@ import {
   ROAD_COLORS,
   drawRoadArrow,
 } from '@/components/game/systems/vehicles';
-import { CrimeType, getCrimeName, getCrimeDescription, getFireDescriptionForTile, getFireNameForTile } from '@/components/game/incidents';
+import { CrimeType, getCrimeName, getCrimeDescription, getFireDescriptionForTile, getFireNameForTile } from '@/components/game/incidentData';
 import {
   drawRailTrack,
   drawRailTracksOnly,
@@ -1028,7 +1028,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
 
     // Road render context and state
     const roadRenderContext: RoadRenderContext = {
-      ctx, // will be set per-call
+      ctx: buildingsCtx, // will be set per-call
       grid,
       gridSize,
       zoom,
@@ -1062,13 +1062,13 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     
     // Draw isometric tile base
     // Wrapper function for drawIsometricTile - now extracted to TileRenderer.ts
-    const drawIsometricTileLocal = (localCtx: CanvasRenderingContext2D, x: number, y: number, tile: Tile, highlight: boolean, currentZoom: number, skipGreyBase: boolean = false, skipGreenBase: boolean = false) => {
-      drawIsometricTile(localCtx, x, y, tile, highlight, currentZoom, getTileMetadata, skipGreyBase, skipGreenBase);
+    const drawIsometricTileLocal = (ctx: CanvasRenderingContext2D, x: number, y: number, tile: Tile, highlight: boolean, currentZoom: number, skipGreyBase: boolean = false, skipGreenBase: boolean = false) => {
+      drawIsometricTileLocal(ctx, x, y, tile, highlight, currentZoom, getTileMetadata, skipGreyBase, skipGreenBase);
     };
 
     // Wrapper function for drawWaterTileAt - now extracted to TileRenderer.ts
-    const drawWaterTileAtLocal = (localCtx: CanvasRenderingContext2D, screenX: number, screenY: number, gridX: number, gridY: number) => {
-      drawWaterTileAt(localCtx, screenX, screenY, gridX, gridY);
+    const drawWaterTileAtLocal = (ctx: CanvasRenderingContext2D, screenX: number, screenY: number, gridX: number, gridY: number) => {
+      drawWaterTileAt(ctx, screenX, screenY, gridX, gridY);
     };
 
     // Wrapper function for drawBuilding - uses BuildingRenderer.ts
@@ -1392,7 +1392,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     // PERF: Use for loop instead of forEach to avoid function call overhead
     for (let i = 0; i < waterQueue.length; i++) {
       const { tile, screenX, screenY } = waterQueue[i];
-      drawBuildingLocal(ctx, screenX, screenY, tile);
+      drawBuilding(ctx, screenX, screenY, tile);
     }
     
     ctx.restore(); // Remove clipping after drawing water
@@ -1406,10 +1406,10 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
       // Only consider tiles within bounds - don't draw beaches on map edges
       // Also exclude beaches next to marina docks and piers
       const adjacentLand = {
-        north: (tile.x - 1 >= 0 && tile.x - 1 < gridSize && tile.y >= 0 && tile.y < gridSize) && !isWaterWrapper(tile.x - 1, tile.y) && !hasMarinaPierWrapper(tile.x - 1, tile.y),
-        east: (tile.x >= 0 && tile.x < gridSize && tile.y - 1 >= 0 && tile.y - 1 < gridSize) && !isWaterWrapper(tile.x, tile.y - 1) && !hasMarinaPierWrapper(tile.x, tile.y - 1),
-        south: (tile.x + 1 >= 0 && tile.x + 1 < gridSize && tile.y >= 0 && tile.y < gridSize) && !isWaterWrapper(tile.x + 1, tile.y) && !hasMarinaPierWrapper(tile.x + 1, tile.y),
-        west: (tile.x >= 0 && tile.x < gridSize && tile.y + 1 >= 0 && tile.y + 1 < gridSize) && !isWaterWrapper(tile.x, tile.y + 1) && !hasMarinaPierWrapper(tile.x, tile.y + 1),
+        north: (tile.x - 1 >= 0 && tile.x - 1 < gridSize && tile.y >= 0 && tile.y < gridSize) && !isWater(tile.x - 1, tile.y) && !hasMarinaPier(tile.x - 1, tile.y),
+        east: (tile.x >= 0 && tile.x < gridSize && tile.y - 1 >= 0 && tile.y - 1 < gridSize) && !isWater(tile.x, tile.y - 1) && !hasMarinaPier(tile.x, tile.y - 1),
+        south: (tile.x + 1 >= 0 && tile.x + 1 < gridSize && tile.y >= 0 && tile.y < gridSize) && !isWater(tile.x + 1, tile.y) && !hasMarinaPier(tile.x + 1, tile.y),
+        west: (tile.x >= 0 && tile.x < gridSize && tile.y + 1 >= 0 && tile.y + 1 < gridSize) && !isWater(tile.x, tile.y + 1) && !hasMarinaPier(tile.x, tile.y + 1),
       };
       drawBeachOnWater(ctx, screenX, screenY, adjacentLand);
     }
@@ -1436,7 +1436,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
       ctx.fill();
       
       // Draw road markings and sidewalks
-      drawBuildingLocal(ctx, screenX, screenY, tile);
+      drawBuilding(ctx, screenX, screenY, tile);
       
       // If this road has a rail overlay, draw just the rail tracks (ties and rails, no ballast)
       // Crossing signals/gates are drawn later (after rail tiles) to avoid z-order issues
@@ -1568,7 +1568,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
         // PERF: Use for loop instead of forEach
         for (let i = 0; i < buildingQueue.length; i++) {
           const { tile, screenX, screenY } = buildingQueue[i];
-          drawBuildingLocal(buildingsCtx, screenX, screenY, tile);
+          drawBuilding(buildingsCtx, screenX, screenY, tile);
         }
         
         // NOTE: Recreation pedestrians are now drawn in the animation loop on the air canvas

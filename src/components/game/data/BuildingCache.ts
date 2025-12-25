@@ -20,7 +20,7 @@
 
 import { BuildingType, Tile } from '@/types/game';
 import { GridSpatialHash } from './SpatialHash';
-import { PedestrianDestType } from './types';
+import { PedestrianDestType } from '../types';
 
 // PERF: Pre-computed category lookup map - O(1) lookup instead of multiple Set.has() calls
 // This is faster than checking 8+ Sets sequentially

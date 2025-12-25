@@ -16,7 +16,7 @@ import type {
   WorldRenderState,
 } from '@/components/game/types';
 import type { Tile } from '@/types/game';
-import type { CrimeType } from '@/components/game/incidentData';
+import type { CrimeType } from '@/components/game/incidents';
 
 /**
  * Canvas element refs organized by rendering layer

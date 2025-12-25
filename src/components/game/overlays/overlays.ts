@@ -11,7 +11,7 @@
  */
 
 import { Tile } from '@/types/game';
-import { OverlayMode } from './types';
+import { OverlayMode } from '../types';
 
 // ============================================================================
 // Types

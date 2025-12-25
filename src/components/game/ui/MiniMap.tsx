@@ -3,7 +3,7 @@
 import React, { useRef, useState, useCallback, useEffect } from 'react';
 import { useMiniMapData } from '@/store/selectors';
 import { Card } from '@/components/ui/card';
-import { TILE_WIDTH, TILE_HEIGHT } from '@/components/game/types';
+import { TILE_WIDTH, TILE_HEIGHT } from '../types';
 
 // Constants
 const MINIMAP_SIZE = 140;

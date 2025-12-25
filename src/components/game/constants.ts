@@ -16,8 +16,10 @@ const HALF_PI = PI / 2;
 const THREE_HALF_PI = (3 * PI) / 2;
 const QUARTER_PI = PI / 4;
 const THREE_QUARTER_PI = (3 * PI) / 4;
-const HALF_TILE_WIDTH = TILE_WIDTH / 2;  // 32
-const HALF_TILE_HEIGHT = TILE_HEIGHT / 2; // 19.2
+
+// Exported half tile dimensions for use in other modules
+export const HALF_TILE_WIDTH = TILE_WIDTH / 2;  // 32
+export const HALF_TILE_HEIGHT = TILE_HEIGHT / 2; // 19.2
 
 // Vehicle colors (duller/muted versions) - frozen tuple
 export const CAR_COLORS = Object.freeze(['#d97777', '#d4a01f', '#2ba67a', '#4d84c8', '#9a6ac9'] as const);

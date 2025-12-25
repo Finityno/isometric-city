@@ -1,20 +1,10 @@
 import { Tile } from '@/types/game';
 import { CarDirection, TILE_WIDTH, TILE_HEIGHT } from './types';
-import { OPPOSITE_DIRECTION } from './constants';
+import { OPPOSITE_DIRECTION, HALF_TILE_WIDTH, HALF_TILE_HEIGHT } from './constants';
 
 // Constants
 const MAX_ROAD_SEARCH_DISTANCE = 20;
 const MAX_GRID_SIZE = 256;
-
-// PERF: Pre-computed half dimensions to avoid division in hot paths
-const HALF_TILE_WIDTH = TILE_WIDTH / 2;   // 32
-const HALF_TILE_HEIGHT = TILE_HEIGHT / 2; // 19.2
-// PERF: Pre-computed inverse for multiplication instead of division
-const INV_HALF_TILE_WIDTH = 1 / HALF_TILE_WIDTH;
-const INV_HALF_TILE_HEIGHT = 1 / HALF_TILE_HEIGHT;
-
-// PERF: Monotonic counter for LRU cache instead of Date.now() (avoids system call overhead)
-let lruCounter = 0;
 
 // PERF: Pre-allocated typed arrays for BFS pathfinding to reduce GC pressure
 // Max path length of 2048 nodes should be sufficient for most city sizes
@@ -38,32 +28,8 @@ const pathCache = new Map<string, PathCacheEntry>();
 let pathCacheVersion = 0; // Incremented when grid changes (roads added/removed)
 let currentGridVersion = -1;
 
-// PERF: Pre-allocated result arrays to avoid object creation in hot paths
-// These are used by gridToScreen/screenToGrid for callers that use the pooled versions
-const SCREEN_RESULT = { screenX: 0, screenY: 0 };
-const GRID_RESULT = { gridX: 0, gridY: 0 };
-
 // PERF: Pre-allocated direction arrays to avoid allocation in getDirectionOptions
 const DIRECTION_RESULT: CarDirection[] = [];
-
-// PERF: Direction lookup table for getDirectionToTile - uses encoded (dx+1)*3+(dy+1) as index
-// dx,dy can be -1,0,1, so (dx+1) gives 0,1,2 and (dy+1) gives 0,1,2
-// Index = (dx+1)*3 + (dy+1), values 0-8 map to directions or null
-const DIRECTION_LOOKUP: (CarDirection | null)[] = [
-  null,    // dx=-1, dy=-1 (diagonal)
-  'north', // dx=-1, dy=0
-  null,    // dx=-1, dy=1  (diagonal)
-  'east',  // dx=0,  dy=-1
-  null,    // dx=0,  dy=0  (same tile)
-  'west',  // dx=0,  dy=1
-  null,    // dx=1,  dy=-1 (diagonal)
-  'south', // dx=1,  dy=0
-  null,    // dx=1,  dy=1  (diagonal)
-];
-
-// PERF: Direction to delta lookup for avoiding branching
-const DIR_TO_DX: Record<CarDirection, number> = { north: -1, south: 1, east: 0, west: 0 };
-const DIR_TO_DY: Record<CarDirection, number> = { north: 0, south: 0, east: -1, west: 1 };
 
 // Call this when roads are added/removed to invalidate path cache
 export function invalidatePathCache(): void {
@@ -120,11 +86,6 @@ export function isRoadTile(gridData: Tile[][], gridSizeValue: number, x: number,
   // This combines the bounds checks into fewer comparisons
   if ((x >>> 0) >= gridSizeValue || (y >>> 0) >= gridSizeValue) return false;
   return gridData[y][x].building.type === 'road';
-}
-
-// PERF: Inlined road check for hot paths - avoids function call overhead
-function isRoadTileInline(gridData: Tile[][], gridSizeValue: number, x: number, y: number): boolean {
-  return (x >>> 0) < gridSizeValue && (y >>> 0) < gridSizeValue && gridData[y][x].building.type === 'road';
 }
 
 // Get available direction options from a tile

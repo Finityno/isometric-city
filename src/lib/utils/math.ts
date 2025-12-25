@@ -32,6 +32,17 @@ export function lerp(a: number, b: number, t: number): number {
 }
 
 /**
+ * Calculate distance between two points
+ *
+ * @param dx - Delta X
+ * @param dy - Delta Y
+ * @returns Distance
+ */
+export function distance(dx: number, dy: number): number {
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+/**
  * Calculate squared distance between two points (avoids sqrt for performance)
  *
  * Use this for distance comparisons where the exact distance isn't needed.
@@ -43,17 +54,6 @@ export function lerp(a: number, b: number, t: number): number {
  */
 export function distanceSquared(dx: number, dy: number): number {
   return dx * dx + dy * dy;
-}
-
-/**
- * Calculate actual distance between two points
- *
- * @param dx - Delta X
- * @param dy - Delta Y
- * @returns Distance
- */
-export function distance(dx: number, dy: number): number {
-  return Math.sqrt(dx * dx + dy * dy);
 }
 
 /**

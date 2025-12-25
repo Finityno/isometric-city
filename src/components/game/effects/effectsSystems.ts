@@ -1,5 +1,5 @@
 import { useCallback, useRef } from 'react';
-import { Firework, FactorySmog, WorldRenderState, TILE_WIDTH, TILE_HEIGHT, SmogParticle, FireworkParticle } from './types';
+import { Firework, FactorySmog, WorldRenderState, TILE_WIDTH, TILE_HEIGHT, SmogParticle, FireworkParticle } from '../types';
 import { BuildingType } from '@/types/game';
 import {
   FIREWORK_BUILDINGS,
@@ -27,9 +27,9 @@ import {
   SMOG_PARTICLE_GROWTH,
   SMOG_MAX_PARTICLES_PER_FACTORY,
   SMOG_MAX_PARTICLES_PER_FACTORY_MOBILE,
-} from './constants';
-import { gridToScreen } from './utils';
-import { findFireworkBuildings, findSmogFactories } from './gridFinders';
+} from '../constants';
+import { gridToScreen } from '../utils';
+import { findFireworkBuildings, findSmogFactories } from '../queries/gridFinders';
 
 // ============================================================================
 // OBJECT POOLS - Reduce garbage collection overhead

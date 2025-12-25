@@ -21,7 +21,7 @@ import {
   WAKE_MAX_AGE,
   WAKE_SPAWN_INTERVAL,
 } from '../../constants';
-import { findBays, getRandomBayTile, isOverWater, BayInfo } from '../../gridFinders';
+import { findBays, getRandomBayTile, isOverWater, BayInfo } from '../../queries/gridFinders';
 import { clamp, normalizeAngleFast } from '@/lib/utils/math';
 
 // Pre-computed constants to avoid repeated calculations

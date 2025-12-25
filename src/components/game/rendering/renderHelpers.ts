@@ -10,7 +10,7 @@
  */
 
 import { BuildingType, Tile } from '@/types/game';
-import { TILE_WIDTH, TILE_HEIGHT } from './types';
+import { TILE_WIDTH, TILE_HEIGHT } from '../types';
 
 // Pre-computed constants - avoid repeated calculations
 const TILE_HEIGHT_X2 = TILE_HEIGHT * 2;

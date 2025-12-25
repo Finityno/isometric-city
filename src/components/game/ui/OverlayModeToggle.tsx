@@ -13,8 +13,8 @@ import {
   EducationIcon,
   SubwayIcon,
 } from '@/components/ui/Icons';
-import { OverlayMode } from './types';
-import { OVERLAY_CONFIG, getOverlayButtonClass } from './overlays';
+import { OverlayMode } from '../types';
+import { OVERLAY_CONFIG, getOverlayButtonClass } from '../overlays';
 
 // ============================================================================
 // Types

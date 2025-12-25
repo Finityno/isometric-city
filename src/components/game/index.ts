@@ -2,20 +2,21 @@
 export * from './types';
 export * from './constants';
 export * from './utils';
-export * from './drawing';
+
+// Re-export from subdirectories
+export * from './rendering';
 export * from './overlays';
-export * from './placeholders';
-export * from './imageLoader';
-export * from './gridFinders';
-export * from './renderHelpers';
-export * from './drawAircraft';
-export * from './drawPedestrians';
+export * from './helpers';
+export * from './queries';
+export * from './incidents';
+export * from './ui';
+export * from './data';
+export * from './effects';
+
+// Re-export systems
 export * from './systems/vehicles/TrafficSystem';
-export * from './incidentData';
 export * from './systems/pedestrians';
-export { Sidebar } from './Sidebar';
-export { OverlayModeToggle } from './OverlayModeToggle';
-export { MiniMap } from './MiniMap';
-export { TopBar, StatsPanel, StatBadge, DemandIndicator, MiniStat, TimeOfDayIcon } from './TopBar';
+
+// Re-export main component
 export { CanvasIsometricGrid } from './CanvasIsometricGrid';
 export type { CanvasIsometricGridProps } from './CanvasIsometricGrid';

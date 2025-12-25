@@ -98,7 +98,7 @@ import { useAircraftSystems, AircraftSystemRefs, AircraftSystemState } from '@/c
 import { useBargeSystem, BargeSystemRefs, BargeSystemState } from '@/components/game/systems/marine';
 import { useBoatSystem, BoatSystemRefs, BoatSystemState } from '@/components/game/systems/marine';
 import { useSeaplaneSystem, SeaplaneSystemRefs, SeaplaneSystemState } from '@/components/game/systems/marine';
-import { useEffectsSystems, EffectsSystemRefs, EffectsSystemState } from '@/components/game/effects';
+import { useEffectsSystems, EffectsSystemRefs, EffectsSystemState } from '@/components/game/effectsSystems';
 import {
   analyzeMergedRoad,
   getTrafficLightState,
@@ -108,7 +108,7 @@ import {
   ROAD_COLORS,
   drawRoadArrow,
 } from '@/components/game/systems/vehicles';
-import { CrimeType, getCrimeName, getCrimeDescription, getFireDescriptionForTile, getFireNameForTile } from '@/components/game/incidents';
+import { CrimeType, getCrimeName, getCrimeDescription, getFireDescriptionForTile, getFireNameForTile } from '@/components/game/incidentData';
 import {
   drawRailTrack,
   drawRailTracksOnly,
@@ -1028,7 +1028,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
 
     // Road render context and state
     const roadRenderContext: RoadRenderContext = {
-      ctx, // will be set per-call
+      ctx: buildingsCtx, // will be set per-call
       grid,
       gridSize,
       zoom,
@@ -1061,213 +1061,6 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     };
     
     // Draw isometric tile base
-    // Wrapper function for drawIsometricTile - now extracted to TileRenderer.ts
-    const drawIsometricTileLocal = (localCtx: CanvasRenderingContext2D, x: number, y: number, tile: Tile, highlight: boolean, currentZoom: number, skipGreyBase: boolean = false, skipGreenBase: boolean = false) => {
-      drawIsometricTile(localCtx, x, y, tile, highlight, currentZoom, getTileMetadata, skipGreyBase, skipGreenBase);
-    };
-
-    // Wrapper function for drawWaterTileAt - now extracted to TileRenderer.ts
-    const drawWaterTileAtLocal = (localCtx: CanvasRenderingContext2D, screenX: number, screenY: number, gridX: number, gridY: number) => {
-      drawWaterTileAt(localCtx, screenX, screenY, gridX, gridY);
-    };
-
-    // Wrapper function for drawBuilding - uses BuildingRenderer.ts
-    const drawBuildingLocal = (ctx: CanvasRenderingContext2D, x: number, y: number, tile: Tile) => {
-      const buildingRenderContext: BuildingRenderContext = {
-        ctx,
-        grid,
-        gridSize,
-        zoom,
-      };
-
-      // Check if this is a road or water - these have special handling
-      if (tile.building.type === 'road') {
-        drawRoadLocal(ctx, x, y, tile.x, tile.y, zoom);
-        return;
-      }
-
-      // Draw water tiles underneath marina/pier buildings
-      if (tile.building.type === 'marina_docks_small' || tile.building.type === 'pier_large') {
-        const buildingSize = getBuildingSize(tile.building.type);
-        // Draw water tiles for each tile in the building's footprint
-        for (let dx = 0; dx < buildingSize.width; dx++) {
-          for (let dy = 0; dy < buildingSize.height; dy++) {
-            const tileGridX = tile.x + dx;
-            const tileGridY = tile.y + dy;
-            const { screenX, screenY } = gridToScreen(tileGridX, tileGridY, 0, 0);
-            drawWaterTileAtLocal(ctx, screenX, screenY, tileGridX, tileGridY);
-          }
-        }
-      }
-
-      // For water tiles, use special water rendering
-      if (tile.building.type === 'water') {
-        // Get active sprite pack to check if this has a sprite
-        const activePack = getActiveSpritePack();
-        const hasTileSprite = BUILDING_TO_SPRITE[tile.building.type] ||
-          (activePack.parksBuildings && activePack.parksBuildings[tile.building.type]) ||
-          (activePack.stationsVariants && activePack.stationsVariants[tile.building.type]);
-
-        if (hasTileSprite) {
-          const waterImage = getCachedImage(WATER_ASSET_PATH);
-          const w = TILE_WIDTH;
-          const h = TILE_HEIGHT;
-
-          // Check which adjacent tiles are also water for blending
-          const gridX = tile.x;
-          const gridY = tile.y;
-          const adjacentWater = {
-            north: gridX > 0 && grid[gridY]?.[gridX - 1]?.building.type === 'water',
-            east: gridY > 0 && grid[gridY - 1]?.[gridX]?.building.type === 'water',
-            south: gridX < gridSize - 1 && grid[gridY]?.[gridX + 1]?.building.type === 'water',
-            west: gridY < gridSize - 1 && grid[gridY + 1]?.[gridX]?.building.type === 'water',
-          };
-
-          // Count adjacent water tiles
-          const adjacentCount = (adjacentWater.north ? 1 : 0) + (adjacentWater.east ? 1 : 0) +
-                               (adjacentWater.south ? 1 : 0) + (adjacentWater.west ? 1 : 0);
-
-          if (waterImage) {
-            // Center the water sprite on the tile
-            const tileCenterX = x + w / 2;
-            const tileCenterY = y + h / 2;
-
-            // Random subcrop of water texture based on tile position for variety
-            const imgW = waterImage.naturalWidth || waterImage.width;
-            const imgH = waterImage.naturalHeight || waterImage.height;
-
-            // Deterministic "random" offset based on tile position
-            const seedX = ((gridX * 7919 + gridY * 6271) % 1000) / 1000;
-            const seedY = ((gridX * 4177 + gridY * 9311) % 1000) / 1000;
-
-            // Take a subcrop - use 35% of the image, offset randomly for variety
-            const cropScale = 0.35;
-            const cropW = imgW * cropScale;
-            const cropH = imgH * cropScale;
-            const maxOffsetX = imgW - cropW;
-            const maxOffsetY = imgH - cropH;
-            const srcX = seedX * maxOffsetX;
-            const srcY = seedY * maxOffsetY;
-
-            // Create a clipping path - expand toward adjacent WATER tiles only
-            // This allows blending between water tiles while preventing bleed onto land
-            const expand = w * 0.4; // How much to expand toward water neighbors
-
-            // Calculate expanded corners based on water adjacency
-            const topY = y - (adjacentWater.north && adjacentWater.east ? expand * 0.5 : 0);
-            const rightX = x + w + ((adjacentWater.east && adjacentWater.south) ? expand * 0.5 : 0);
-            const bottomY = y + h + ((adjacentWater.south && adjacentWater.west) ? expand * 0.5 : 0);
-            const leftX = x - ((adjacentWater.west && adjacentWater.north) ? expand * 0.5 : 0);
-
-            // Expand individual edges toward water neighbors only
-            const topExpand = (adjacentWater.north && adjacentWater.east) ? expand * 0.3 : 0;
-            const rightExpand = (adjacentWater.east && adjacentWater.south) ? expand * 0.3 : 0;
-            const bottomExpand = (adjacentWater.south && adjacentWater.west) ? expand * 0.3 : 0;
-            const leftExpand = (adjacentWater.west && adjacentWater.north) ? expand * 0.3 : 0;
-
-            ctx.save();
-            ctx.beginPath();
-            ctx.moveTo(x + w / 2, topY - topExpand);                    // top
-            ctx.lineTo(rightX + rightExpand, y + h / 2);                // right
-            ctx.lineTo(x + w / 2, bottomY + bottomExpand);              // bottom
-            ctx.lineTo(leftX - leftExpand, y + h / 2);                  // left
-            ctx.closePath();
-            ctx.clip();
-
-            const aspectRatio = cropH / cropW;
-            const savedAlpha = ctx.globalAlpha;
-
-            // Jitter for variety
-            const jitterX = (seedX - 0.5) * w * 0.3;
-            const jitterY = (seedY - 0.5) * h * 0.3;
-
-            // For tiles with more water neighbors, draw blended passes
-            if (adjacentCount >= 2) {
-              // Two passes: large soft outer, smaller solid core
-              // Outer pass - large, semi-transparent for blending
-              const outerScale = 2.0 + adjacentCount * 0.3;
-              const outerWidth = w * outerScale;
-              const outerHeight = outerWidth * aspectRatio;
-              ctx.globalAlpha = 0.35;
-              ctx.drawImage(
-                waterImage,
-                srcX, srcY, cropW, cropH,
-                Math.round(tileCenterX - outerWidth / 2 + jitterX),
-                Math.round(tileCenterY - outerHeight / 2 + jitterY),
-                Math.round(outerWidth),
-                Math.round(outerHeight)
-              );
-
-              // Core pass - full opacity
-              const coreScale = 1.1;
-              const coreWidth = w * coreScale;
-              const coreHeight = coreWidth * aspectRatio;
-              ctx.globalAlpha = 0.9;
-              ctx.drawImage(
-                waterImage,
-                srcX, srcY, cropW, cropH,
-                Math.round(tileCenterX - coreWidth / 2 + jitterX * 0.5),
-                Math.round(tileCenterY - coreHeight / 2 + jitterY * 0.5),
-                Math.round(coreWidth),
-                Math.round(coreHeight)
-              );
-            } else {
-              // Edge tile with few water neighbors - single contained draw
-              const destWidth = w * 1.15;
-              const destHeight = destWidth * aspectRatio;
-
-              ctx.globalAlpha = 0.95;
-              ctx.drawImage(
-                waterImage,
-                srcX, srcY, cropW, cropH,
-                Math.round(tileCenterX - destWidth / 2 + jitterX * 0.3),
-                Math.round(tileCenterY - destHeight / 2 + jitterY * 0.3),
-                Math.round(destWidth),
-                Math.round(destHeight)
-              );
-            }
-
-            ctx.globalAlpha = savedAlpha;
-            ctx.restore();
-          } else {
-            // Water image not loaded yet - draw placeholder diamond
-            ctx.fillStyle = '#0ea5e9';
-            ctx.beginPath();
-            ctx.moveTo(x + w / 2, y);
-            ctx.lineTo(x + w, y + h / 2);
-            ctx.lineTo(x + w / 2, y + h);
-            ctx.lineTo(x, y + h / 2);
-            ctx.closePath();
-            ctx.fill();
-          }
-        }
-        return;
-      }
-
-      // Use the extracted BuildingRenderer for all other building types
-      drawBuildingFromRenderer(buildingRenderContext, tile, x, y);
-
-      // Draw fire effect (kept here as it's a simple overlay)
-      if (tile.building.onFire) {
-        const fireX = x + TILE_WIDTH / 2;
-        const fireY = y - 10;
-
-        ctx.fillStyle = 'rgba(255, 100, 0, 0.5)';
-        ctx.beginPath();
-        ctx.ellipse(fireX, fireY, 18, 25, 0, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.fillStyle = 'rgba(255, 200, 0, 0.8)';
-        ctx.beginPath();
-        ctx.ellipse(fireX, fireY + 5, 10, 15, 0, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.fillStyle = 'rgba(255, 255, 200, 0.9)';
-        ctx.beginPath();
-        ctx.ellipse(fireX, fireY + 8, 5, 8, 0, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    };
     // Draw tiles in isometric order (back to front)
     // PERF: Only iterate through diagonal bands that intersect the visible viewport
     for (let sum = visibleMinSum; sum <= visibleMaxSum; sum++) {
@@ -1304,7 +1097,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
         // Draw base tile for all tiles (including water), but skip gray bases for buildings and green bases for grass/empty adjacent to water or parks
         // Highlight subway stations when subway overlay is active
         const isSubwayStationHighlight = overlayMode === 'subway' && tile.building.type === 'subway_station';
-        drawIsometricTileLocal(ctx, screenX, screenY, tile, !!(isInDragRect || isSubwayStationHighlight), zoom, true, needsGreenBaseOverWater || needsGreenBaseForPark);
+        drawIsometricTile(ctx, screenX, screenY, tile, !!(isInDragRect || isSubwayStationHighlight), zoom, true, needsGreenBaseOverWater || needsGreenBaseForPark);
         
         if (needsGreyBase) {
           baseTileQueue.push({ screenX, screenY, tile, depth: x + y });
@@ -1392,7 +1185,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
     // PERF: Use for loop instead of forEach to avoid function call overhead
     for (let i = 0; i < waterQueue.length; i++) {
       const { tile, screenX, screenY } = waterQueue[i];
-      drawBuildingLocal(ctx, screenX, screenY, tile);
+      drawBuilding(ctx, screenX, screenY, tile);
     }
     
     ctx.restore(); // Remove clipping after drawing water
@@ -1406,10 +1199,10 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
       // Only consider tiles within bounds - don't draw beaches on map edges
       // Also exclude beaches next to marina docks and piers
       const adjacentLand = {
-        north: (tile.x - 1 >= 0 && tile.x - 1 < gridSize && tile.y >= 0 && tile.y < gridSize) && !isWaterWrapper(tile.x - 1, tile.y) && !hasMarinaPierWrapper(tile.x - 1, tile.y),
-        east: (tile.x >= 0 && tile.x < gridSize && tile.y - 1 >= 0 && tile.y - 1 < gridSize) && !isWaterWrapper(tile.x, tile.y - 1) && !hasMarinaPierWrapper(tile.x, tile.y - 1),
-        south: (tile.x + 1 >= 0 && tile.x + 1 < gridSize && tile.y >= 0 && tile.y < gridSize) && !isWaterWrapper(tile.x + 1, tile.y) && !hasMarinaPierWrapper(tile.x + 1, tile.y),
-        west: (tile.x >= 0 && tile.x < gridSize && tile.y + 1 >= 0 && tile.y + 1 < gridSize) && !isWaterWrapper(tile.x, tile.y + 1) && !hasMarinaPierWrapper(tile.x, tile.y + 1),
+        north: (tile.x - 1 >= 0 && tile.x - 1 < gridSize && tile.y >= 0 && tile.y < gridSize) && !isWater(tile.x - 1, tile.y) && !hasMarinaPier(tile.x - 1, tile.y),
+        east: (tile.x >= 0 && tile.x < gridSize && tile.y - 1 >= 0 && tile.y - 1 < gridSize) && !isWater(tile.x, tile.y - 1) && !hasMarinaPier(tile.x, tile.y - 1),
+        south: (tile.x + 1 >= 0 && tile.x + 1 < gridSize && tile.y >= 0 && tile.y < gridSize) && !isWater(tile.x + 1, tile.y) && !hasMarinaPier(tile.x + 1, tile.y),
+        west: (tile.x >= 0 && tile.x < gridSize && tile.y + 1 >= 0 && tile.y + 1 < gridSize) && !isWater(tile.x, tile.y + 1) && !hasMarinaPier(tile.x, tile.y + 1),
       };
       drawBeachOnWater(ctx, screenX, screenY, adjacentLand);
     }
@@ -1436,7 +1229,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
       ctx.fill();
       
       // Draw road markings and sidewalks
-      drawBuildingLocal(ctx, screenX, screenY, tile);
+      drawBuilding(ctx, screenX, screenY, tile);
       
       // If this road has a rail overlay, draw just the rail tracks (ties and rails, no ballast)
       // Crossing signals/gates are drawn later (after rail tiles) to avoid z-order issues
@@ -1568,7 +1361,7 @@ export function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile
         // PERF: Use for loop instead of forEach
         for (let i = 0; i < buildingQueue.length; i++) {
           const { tile, screenX, screenY } = buildingQueue[i];
-          drawBuildingLocal(buildingsCtx, screenX, screenY, tile);
+          drawBuilding(buildingsCtx, screenX, screenY, tile);
         }
         
         // NOTE: Recreation pedestrians are now drawn in the animation loop on the air canvas

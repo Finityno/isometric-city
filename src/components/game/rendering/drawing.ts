@@ -11,15 +11,12 @@
  */
 
 import { Tile, ZoneType } from '@/types/game';
-import { TILE_WIDTH, TILE_HEIGHT } from './types';
+import { TILE_WIDTH, TILE_HEIGHT } from '../types';
+import { HALF_TILE_WIDTH, HALF_TILE_HEIGHT } from '../constants';
 
 // ============================================================================
 // Pre-computed Constants (avoid calculations in render loops)
 // ============================================================================
-
-/** Half tile dimensions - pre-computed for performance */
-const HALF_TILE_WIDTH = TILE_WIDTH * 0.5;
-const HALF_TILE_HEIGHT = TILE_HEIGHT * 0.5;
 
 /** Pre-computed sqrt(2)/2 for diagonal calculations */
 const SQRT2_OVER_2 = 0.7071067811865476; // Math.SQRT2 / 2

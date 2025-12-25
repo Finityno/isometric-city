@@ -27,16 +27,13 @@ import { CommandMenu } from '@/components/ui/CommandMenu';
 // Import game components
 import { OverlayMode } from '@/components/game/types';
 import { getOverlayForTool } from '@/components/game/overlays';
-import { OverlayModeToggle } from '@/components/game/OverlayModeToggle';
-import { Sidebar } from '@/components/game/Sidebar';
+import { OverlayModeToggle, Sidebar, MiniMap, TopBar, StatsPanel } from '@/components/game/ui';
 import {
   BudgetPanel,
   StatisticsPanel,
   SettingsPanel,
   AdvisorsPanel,
 } from '@/components/game/panels';
-import { MiniMap } from '@/components/game/MiniMap';
-import { TopBar, StatsPanel } from '@/components/game/TopBar';
 import { CanvasIsometricGrid } from '@/components/game/CanvasIsometricGrid';
 
 // Cargo type names for notifications

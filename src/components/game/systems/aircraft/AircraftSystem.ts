@@ -12,7 +12,7 @@ import {
   PLANE_TYPES,
 } from '../../constants';
 import { gridToScreen } from '../../utils';
-import { findAirports, findHeliports } from '../../gridFinders';
+import { findAirports, findHeliports } from '../../queries/gridFinders';
 
 // ============================================================================
 // PERFORMANCE OPTIMIZATIONS: Pre-computed constants and lookup tables

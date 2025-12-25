@@ -8,9 +8,9 @@ import {
   getActiveSpritePack,
 } from '@/lib/renderConfig';
 import { getBuildingSize, getRoadAdjacency, requiresWaterAdjacency } from '@/lib/simulation';
-import { drawPlaceholderBuilding } from '@/components/game/placeholders';
-import { getCachedImage } from '@/components/game/imageLoader';
-import { drawFoundationPlot } from '@/components/game/drawing';
+import { drawPlaceholderBuilding } from '@/components/game/rendering';
+import { getCachedImage } from '@/components/game/helpers';
+import { drawFoundationPlot } from '@/components/game/rendering';
 
 export interface BuildingRenderContext {
   ctx: CanvasRenderingContext2D;

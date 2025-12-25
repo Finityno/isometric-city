@@ -10,7 +10,7 @@ import {
   WAKE_SPAWN_INTERVAL,
 } from '../../constants';
 import { gridToScreen } from '../../utils';
-import { findMarinasAndPiers, findAdjacentWaterTile, generateTourWaypoints, DockInfo } from '../../gridFinders';
+import { findMarinasAndPiers, findAdjacentWaterTile, generateTourWaypoints, DockInfo } from '../../queries/gridFinders';
 import { Tile } from '@/types/game';
 import { normalizeAngleDiff } from '@/lib/utils/math';
 

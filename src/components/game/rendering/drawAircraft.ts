@@ -11,7 +11,7 @@
  * - Pre-allocated objects to avoid GC pressure
  */
 
-import { Airplane, Helicopter, Seaplane, TILE_WIDTH, TILE_HEIGHT, PlaneType } from './types';
+import { Airplane, Helicopter, Seaplane, TILE_WIDTH, TILE_HEIGHT, PlaneType } from '../types';
 import {
   AIRPLANE_SPRITE_COLS,
   AIRPLANE_SPRITE_ROWS,
@@ -20,8 +20,8 @@ import {
   COL1_OVERRIDE_PLANE_TYPES_SET,
   COL1_DIRECTION_OVERRIDES,
   PLANE_SCALES,
-} from './constants';
-import { getCachedImage } from './imageLoader';
+} from '../constants';
+import { getCachedImage } from '../helpers/imageLoader';
 
 // Cache key for the planes sprite sheet (no red filter needed)
 const AIRPLANE_SPRITE_CACHE_KEY = '/assets/sprites_red_water_new_planes.png';

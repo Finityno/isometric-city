@@ -22,7 +22,7 @@ import {
   findOceanSpawnPoints,
   findAdjacentWaterTileForMarina,
   isOverWater,
-} from '../../gridFinders';
+} from '../../queries/gridFinders';
 import { normalizeAngle, distanceSquared } from '@/lib/utils/math';
 
 // ============================================================================

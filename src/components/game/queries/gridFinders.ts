@@ -5,8 +5,8 @@
  */
 
 import { BuildingType, Tile } from '@/types/game';
-import { TourWaypoint, TILE_WIDTH, TILE_HEIGHT, PedestrianDestType } from './types';
-import { gridToScreen } from './utils';
+import { TourWaypoint, TILE_WIDTH, TILE_HEIGHT, PedestrianDestType } from '../types';
+import { gridToScreen } from '../utils';
 
 // PERF: Building type Sets for O(1) lookup instead of O(n) array.includes()
 const RESIDENTIAL_BUILDING_TYPES = new Set<BuildingType>([
